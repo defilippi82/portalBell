@@ -9,7 +9,7 @@ export default function ResidenteView() {
   
   // Estados del Residente
   const [estadoCasa, setEstadoCasa] = useState('en_casa'); // 'en_casa' o 'fuera_de_casa'
-  const [pushHabilitado, setPushHabilitado] = useState(false);
+  const [pushHabilitado, setPushHabilitado] = useState(true);
   
   // Gestión de Sub-usuarios (Máximo 4)
   const [subUsuarios, setSubUsuarios] = useState([]);
@@ -413,12 +413,12 @@ export default function ResidenteView() {
       </div>
 
       {/* 3. MENSAJES PREDETERMINADOS */}
-      <div style={{ background: '#e2f0d9', padding: '15px', borderRadius: '8px', marginBottom: '15px' }}>
-        <h3>💬 Mensajes Predeterminados</h3>
-        <p style={{ fontSize: '13px', color: '#555' }}>Respuestas rápidas para enviar al visitante:</p>
+      <div style={{ background: '#23ad1e', padding: '15px', borderRadius: '8px', marginBottom: '15px' }}>
+        <h3 style={{ margin: 0, color: '#0c0c0c' }}>💬 Mensajes Predeterminados</h3>
+        <p style={{ fontSize: '13px', color: '#0c0c0c' }}>Respuestas rápidas para enviar al visitante:</p>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
           {mensajesPredeterminados.map((msg, index) => (
-            <button key={index} onClick={() => enviarMensajeRapido(msg)} style={{ padding: '8px', background: 'white', border: '1px solid #28a745', borderRadius: '4px', cursor: 'pointer', textAlign: 'left', fontSize: '12px' }}>
+            <button key={index} onClick={() => enviarMensajeRapido(msg)} style={{ padding: '8px', background: '#3877b3', border: '1px solid #28a745', borderRadius: '4px', cursor: 'pointer', textAlign: 'left', fontSize: '12px' }}>
               💬 {msg}
             </button>
           ))}

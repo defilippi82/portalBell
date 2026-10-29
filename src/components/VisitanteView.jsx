@@ -248,7 +248,7 @@ export default function VisitanteView() {
       ) : (
         <div style={{ background: '#f8f9fa', padding: '20px', borderRadius: '8px', border: '1px solid #ddd', textAlign: 'center' }}>
           <h3>UF Seleccionada: {ufSeleccionada.uf}</h3>
-          <p>Destinatario: {ufSeleccionada.nombre} {ufSeleccionada.apellido ? `${ufSeleccionada.apellido.charAt(0)}.` : ''}</p>
+          <p>Destinatario: {ufSeleccionada.piso} {ufSeleccionada.departamento ? `${ufSeleccionada.departamento.charAt(0)}.` : ''}</p>
 
           {!modoLlamada ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '20px' }}>
