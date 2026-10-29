@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../firebaseConfig/firebase';
-import { collection, getDocs, doc, getDoc, query, where, addDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc, query, where, addDoc, onSnapshot, orderBy, updateDoc } from 'firebase/firestore';
 
 export default function VisitanteView() {
   const [edificioId, setEdificioId] = useState(null);
@@ -16,6 +16,11 @@ export default function VisitanteView() {
   // UF Seleccionada y tipo de llamada
   const [ufSeleccionada, setUfSeleccionada] = useState(null);
   const [modoLlamada, setModoLlamada] = useState(null); // 'chat' o 'video'
+  const [llamadaId, setLlamadaId] = useState(null);
+  
+  // Estados para el Chat en tiempo real
+  const [mensajesChat, setMensajesChat] = useState([]);
+  const [nuevoMensaje, setNuevoMensaje] = useState('');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -30,6 +35,35 @@ export default function VisitanteView() {
     }
   }, []);
 
+  // Escuchar el estado de la llamada y los mensajes en tiempo real para el visitante
+  useEffect(() => {
+    if (!llamadaId) return;
+
+    // 1. Escuchar si el residente finaliza/corta la llamada
+    const unsubscribeCall = onSnapshot(doc(db, 'llamadas', llamadaId), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.estado === 'finalizado') {
+          alert("La llamada fue finalizada por el residente.");
+          setModoLlamada(null);
+          setLlamadaId(null);
+        }
+      }
+    });
+
+    // 2. Escuchar los mensajes del chat en tiempo real
+    const q = query(collection(db, 'llamadas', llamadaId, 'mensajes'), orderBy('fecha', 'asc'));
+    const unsubscribeMsgs = onSnapshot(q, (snapshot) => {
+      const msgs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setMensajesChat(msgs);
+    });
+
+    return () => {
+      unsubscribeCall();
+      unsubscribeMsgs();
+    };
+  }, [llamadaId]);
+
   const cargarDatosEdificioYUnidades = async (idEd) => {
     try {
       const docRef = doc(db, 'edificios', idEd);
@@ -38,8 +72,6 @@ export default function VisitanteView() {
       if (docSnap.exists()) {
         const edData = docSnap.data();
         setEdificioInfo(edData);
-        
-        // Nos aseguramos de parsear a Número por si se guardaron como texto
         const latEdificio = Number(edData.lat);
         const lngEdificio = Number(edData.lng);
 
@@ -78,7 +110,7 @@ export default function VisitanteView() {
       (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
-        const radioPermitidoMetros = 150; // Ampliado temporalmente a 150m para pruebas cómodas
+        const radioPermitidoMetros = 150;
 
         const distancia = calcularDistanciaMetros(lat, lng, edificioLat, edificioLng);
         setDistanciaActualMetros(Math.round(distancia));
@@ -87,13 +119,13 @@ export default function VisitanteView() {
           setEnRango(true);
         } else {
           setEnRango(false);
-          setDistanciaError(`Estás a ${Math.round(distancia)}m del edificio (Máximo permitido: ${radioPermitidoMetros}m). Acercate a la entrada para llamar.`);
+          setDistanciaError(`Estás a ${Math.round(distancia)}m del edificio (Máximo permitido: ${radioPermitidoMetros}m). Acercate a la entrada.`);
         }
         setVerificandoUbicacion(false);
       },
       (error) => {
         console.error("Error GPS:", error);
-        setDistanciaError("No pudimos obtener tu ubicación GPS. Asegurate de dar permisos en tu navegador/celular.");
+        setDistanciaError("No pudimos obtener tu ubicación GPS. Asegurate de dar permisos en tu navegador.");
         setVerificandoUbicacion(false);
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
@@ -115,16 +147,46 @@ export default function VisitanteView() {
   const iniciarLlamadaOchat = async (tipo) => {
     setModoLlamada(tipo);
     try {
-      await addDoc(collection(db, 'historial'), {
+      const llamadaRef = await addDoc(collection(db, 'llamadas'), {
         edificioId,
         uf: ufSeleccionada.uf,
         tipo: tipo,
-        fecha: new Date().toISOString(),
-        resultado: `Llamada iniciada por visitante (${tipo})`
+        estado: 'activo',
+        fecha: new Date().toISOString()
       });
+      setLlamadaId(llamadaRef.id);
     } catch (e) {
-      console.error("Error registrando historial:", e);
+      console.error("Error iniciando sesión:", e);
     }
+  };
+
+  const enviarMensajeChat = async (e) => {
+    e.preventDefault();
+    if (!nuevoMensaje.trim() || !llamadaId) return;
+
+    try {
+      await addDoc(collection(db, 'llamadas', llamadaId, 'mensajes'), {
+        remitente: 'visitante',
+        texto: nuevoMensaje,
+        fecha: new Date().toISOString()
+      });
+      setNuevoMensaje('');
+    } catch (error) {
+      console.error("Error enviando mensaje:", error);
+    }
+  };
+
+  const colgarLlamada = async () => {
+    if (llamadaId) {
+      try {
+        const llamadaRef = doc(db, 'llamadas', llamadaId);
+        await updateDoc(llamadaRef, { estado: 'finalizado' });
+      } catch (e) {
+        console.error("Error al finalizar llamada:", e);
+      }
+    }
+    setModoLlamada(null);
+    setLlamadaId(null);
   };
 
   if (verificandoUbicacion) {
@@ -141,9 +203,6 @@ export default function VisitanteView() {
       <div style={{ padding: '30px', textAlign: 'center', maxWidth: '400px', margin: '40px auto', fontFamily: 'sans-serif', background: '#fff3cd', borderRadius: '8px', border: '1px solid #ffeeba' }}>
         <h2>🚫 Fuera de rango</h2>
         <p>{distanciaError}</p>
-        {distanciaActualMetros !== null && (
-          <p style={{ fontSize: '12px', color: '#555' }}>Distancia calculada actual: <strong>{distanciaActualMetros} metros</strong></p>
-        )}
         <button onClick={() => window.location.reload()} style={{ background: '#007bff', color: 'white', border: 'none', padding: '10px 15px', borderRadius: '5px', cursor: 'pointer', marginTop: '10px' }}>
           🔄 Reintentar
         </button>
@@ -154,7 +213,7 @@ export default function VisitanteView() {
   return (
     <div style={{ padding: '20px', maxWidth: '500px', margin: '0 auto', fontFamily: 'sans-serif' }}>
       <h2>🚪 Timbre - {edificioInfo?.nombre || 'Edificio'}</h2>
-      <p style={{ color: '#28a745', fontSize: '14px', fontWeight: 'bold' }}>✅ Ubicación verificada en puerta ({distanciaActualMetros}m)</p>
+      <p style={{ color: '#28a745', fontSize: '14px', fontWeight: 'bold' }}>✅ Ubicación verificada en puerta</p>
 
       {!ufSeleccionada ? (
         <div>
@@ -204,10 +263,46 @@ export default function VisitanteView() {
               </button>
             </div>
           ) : (
-            <div style={{ marginTop: '20px', padding: '15px', background: 'white', borderRadius: '6px', border: '1px solid #ccc' }}>
-              <h4>{modoLlamada === 'video' ? '📹 Videollamada en curso...' : '💬 Chat en curso...'}</h4>
-              <p style={{ fontSize: '13px', color: '#666' }}>Conectando con la UF {ufSeleccionada.uf}...</p>
-              <button onClick={() => setModoLlamada(null)} style={{ backgroundColor: '#dc3545', color: 'white', padding: '8px 15px', border: 'none', borderRadius: '5px', cursor: 'pointer', marginTop: '15px' }}>
+            <div style={{ marginTop: '20px', padding: '15px', background: 'white', borderRadius: '6px', border: '1px solid #ccc', textAlign: 'left' }}>
+              <h4 style={{ textAlign: 'center', margin: '0 0 10px 0' }}>
+                {modoLlamada === 'video' ? '📹 Videollamada en curso...' : '💬 Chat Activo con UF ' + ufSeleccionada.uf}
+              </h4>
+
+              {modoLlamada === 'chat' ? (
+                <div>
+                  <div style={{ height: '180px', overflowY: 'auto', border: '1px solid #eee', padding: '8px', marginBottom: '10px', background: '#fafafa', borderRadius: '4px' }}>
+                    {mensajesChat.length > 0 ? (
+                      mensajesChat.map((m, i) => (
+                        <div key={i} style={{ marginBottom: '8px', textAlign: m.remitente === 'visitante' ? 'right' : 'left' }}>
+                          <span style={{ display: 'inline-block', background: m.remitente === 'visitante' ? '#007bff' : '#28a745', color: 'white', padding: '6px 10px', borderRadius: '8px', fontSize: '13px' }}>
+                            {m.texto}
+                          </span>
+                        </div>
+                      ))
+                    ) : (
+                      <p style={{ textAlign: 'center', color: '#999', fontSize: '12px' }}>Esperando respuesta del residente...</p>
+                    )}
+                  </div>
+                  <form onSubmit={enviarMensajeChat} style={{ display: 'flex', gap: '5px' }}>
+                    <input 
+                      type="text" 
+                      placeholder="Escribí un mensaje..." 
+                      value={nuevoMensaje} 
+                      onChange={e => setNuevoMensaje(e.target.value)}
+                      style={{ flex: 1, padding: '8px', borderRadius: '4px', border: '1px solid #ccc' }}
+                    />
+                    <button type="submit" style={{ background: '#007bff', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '4px', cursor: 'pointer' }}>Enviar</button>
+                  </form>
+                </div>
+              ) : (
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ background: '#000', color: '#fff', height: '160px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', marginBottom: '10px' }}>
+                    [ Canal de Video / Audio Activo ]
+                  </div>
+                </div>
+              )}
+
+              <button onClick={colgarLlamada} style={{ backgroundColor: '#dc3545', color: 'white', padding: '8px 15px', border: 'none', borderRadius: '5px', cursor: 'pointer', marginTop: '15px', width: '100%' }}>
                 Colgar / Salir
               </button>
             </div>

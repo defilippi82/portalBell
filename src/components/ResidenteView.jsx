@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../firebaseConfig/firebase';
-import { collection, query, where, getDocs, addDoc, updateDoc, doc, deleteDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, doc, deleteDoc, onSnapshot, orderBy } from 'firebase/firestore';
 import { getMessaging, getToken } from 'firebase/messaging';
 
 export default function ResidenteView() {
@@ -16,7 +16,12 @@ export default function ResidenteView() {
   const [nuevoSubNombre, setNuevoSubNombre] = useState('');
   const [nuevoSubRol, setNuevoSubRol] = useState('');
 
-  // Videollamada activa de seguridad
+  // Llamadas Entrantes y Chat en tiempo real
+  const [llamadaEntrante, setLlamadaEntrante] = useState(null);
+  const [mensajesChat, setMensajesChat] = useState([]);
+  const [nuevoMensaje, setNuevoMensaje] = useState('');
+
+  // Videollamada activa de seguridad manual
   const [enVideollamada, setEnVideollamada] = useState(false);
 
   // Historial y Filtro
@@ -48,6 +53,49 @@ export default function ResidenteView() {
       setCargando(false);
     }
   }, []);
+
+  // Escuchar llamadas entrantes de visitantes en tiempo real para esta UF
+  useEffect(() => {
+    if (!ufData) return;
+
+    const q = query(
+      collection(db, 'llamadas'),
+      where('edificioId', '==', ufData.edificioId),
+      where('uf', '==', ufData.uf),
+      where('estado', '==', 'activo')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (!snapshot.empty) {
+        const docLlamada = snapshot.docs[0];
+        setLlamadaEntrante({ id: docLlamada.id, ...docLlamada.data() });
+        
+        if (Notification.permission === 'granted') {
+          new Notification("🔔 ¡Están tocando el timbre!", {
+            body: `Tenés una visita en la puerta esperando (${docLlamada.data().tipo}).`
+          });
+        }
+      } else {
+        setLlamadaEntrante(null);
+        setMensajesChat([]);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [ufData]);
+
+  // Escuchar los mensajes del chat en tiempo real si hay una llamada activa de tipo chat
+  useEffect(() => {
+    if (!llamadaEntrante || llamadaEntrante.tipo !== 'chat') return;
+
+    const q = query(collection(db, 'llamadas', llamadaEntrante.id, 'mensajes'), orderBy('fecha', 'asc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setMensajesChat(msgs);
+    });
+
+    return () => unsubscribe();
+  }, [llamadaEntrante?.id]);
 
   const buscarDatosUnidad = async (ufBuscada) => {
     try {
@@ -99,14 +147,12 @@ export default function ResidenteView() {
         const permiso = await Notification.requestPermission();
         if (permiso === 'granted') {
           const messaging = getMessaging();
-          // Asegurate de agregar tu clave VAPID pública en tu .env como VITE_FIREBASE_VAPID_KEY
           const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY;
           
           if (vapidKey) {
             const currentToken = await getToken(messaging, { vapidKey });
             if (currentToken) {
               console.log("Token FCM obtenido:", currentToken);
-              // Opcional: Podés guardar este token en Firestore vinculado a la UF para enviarle alertas push
             }
           }
 
@@ -153,6 +199,19 @@ export default function ResidenteView() {
   };
 
   const enviarMensajeRapido = async (msg) => {
+    if (llamadaEntrante) {
+      // Si hay una llamada activa, enviamos el mensaje directo al chat
+      try {
+        await addDoc(collection(db, 'llamadas', llamadaEntrante.id, 'mensajes'), {
+          remitente: 'residente',
+          texto: msg,
+          fecha: new Date().toISOString()
+        });
+      } catch (e) {
+        console.error("Error enviando mensaje rápido:", e);
+      }
+    }
+    
     alert(`Mensaje enviado al visitante: "${msg}"`);
     try {
       await addDoc(collection(db, 'historial'), {
@@ -164,6 +223,33 @@ export default function ResidenteView() {
       cargarHistorial(ufData.uf);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const enviarMensajeChat = async (e) => {
+    e.preventDefault();
+    if (!nuevoMensaje.trim() || !llamadaEntrante) return;
+
+    try {
+      await addDoc(collection(db, 'llamadas', llamadaEntrante.id, 'mensajes'), {
+        remitente: 'residente',
+        texto: nuevoMensaje,
+        fecha: new Date().toISOString()
+      });
+      setNuevoMensaje('');
+    } catch (error) {
+      console.error("Error enviando mensaje:", error);
+    }
+  };
+
+  const finalizarLlamada = async () => {
+    if (!llamadaEntrante) return;
+    try {
+      const llamadaRef = doc(db, 'llamadas', llamadaEntrante.id);
+      await updateDoc(llamadaRef, { estado: 'finalizado' });
+      setLlamadaEntrante(null);
+    } catch (error) {
+      console.error("Error al finalizar llamada:", error);
     }
   };
 
@@ -187,6 +273,49 @@ export default function ResidenteView() {
       <p style={{ color: '#555', fontSize: '14px' }}>
         <strong>Titular:</strong> {ufData.nombre} {ufData.apellido} | <strong>Piso:</strong> {ufData.piso} - <strong>Depto:</strong> {ufData.departamento}
       </p>
+
+      {/* SECCIÓN DE LLAMADA ENTRANTE (ALERTA EN TIEMPO REAL) */}
+      {llamadaEntrante && (
+        <div style={{ background: '#d4edda', border: '2px solid #28a745', padding: '15px', borderRadius: '8px', marginBottom: '20px', textAlign: 'center' }}>
+          <h3 style={{ color: '#155724', margin: '0 0 10px 0' }}>🔔 ¡Están tocando el timbre!</h3>
+          <p style={{ fontSize: '14px', marginBottom: '15px' }}>Visita en puerta solicitando: <strong>{llamadaEntrante.tipo === 'video' ? 'Videollamada 📹' : 'Chat Rápido 💬'}</strong></p>
+
+          {llamadaEntrante.tipo === 'chat' ? (
+            <div style={{ textAlign: 'left', background: 'white', padding: '10px', borderRadius: '6px', marginBottom: '10px' }}>
+              <div style={{ height: '150px', overflowY: 'auto', border: '1px solid #eee', padding: '8px', marginBottom: '10px', background: '#fafafa', borderRadius: '4px' }}>
+                {mensajesChat.map((m, i) => (
+                  <div key={i} style={{ marginBottom: '8px', textAlign: m.remitente === 'residente' ? 'right' : 'left' }}>
+                    <span style={{ display: 'inline-block', background: m.remitente === 'residente' ? '#28a745' : '#e9ecef', color: m.remitente === 'residente' ? 'white' : 'black', padding: '6px 10px', borderRadius: '8px', fontSize: '13px' }}>
+                      {m.texto}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <form onSubmit={enviarMensajeChat} style={{ display: 'flex', gap: '5px' }}>
+                <input 
+                  type="text" 
+                  placeholder="Escribile al visitante..." 
+                  value={nuevoMensaje} 
+                  onChange={e => setNuevoMensaje(e.target.value)}
+                  style={{ flex: 1, padding: '8px', borderRadius: '4px', border: '1px solid #ccc' }}
+                />
+                <button type="submit" style={{ background: '#28a745', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '4px', cursor: 'pointer' }}>Enviar</button>
+              </form>
+            </div>
+          ) : (
+            <div style={{ background: '#000', color: '#fff', height: '160px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', marginBottom: '10px' }}>
+              [ Videollamada Activa con la Puerta ]
+            </div>
+          )}
+
+          <button 
+            onClick={finalizarLlamada} 
+            style={{ background: '#dc3545', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer', width: '100%', marginTop: '5px' }}
+          >
+            📵 Cortar / Atendido
+          </button>
+        </div>
+      )}
 
       {/* 1. ESTADO CASA Y NOTIFICACIONES PUSH */}
       <div style={{ background: '#e9ecef', padding: '15px', borderRadius: '8px', marginBottom: '15px' }}>
