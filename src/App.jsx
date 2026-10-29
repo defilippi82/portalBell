@@ -22,7 +22,7 @@ export default function App() {
         <Route path="/timbre" element={<VisitanteView />} />
         <Route path="/residente" element={<ResidenteView usuarioLogueado={usuarioMock} />} />
         <Route path="/historial" element={<HistorialView usuarioLogueado={usuarioMock} />} />
-        <Route path="/usuarios" element={<UsuariosUFView usuarioLogueado={usuarioMock} />} />
+        <Route path="/administrador" element={<UsuariosUFView usuarioLogueado={usuarioMock} />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Router>

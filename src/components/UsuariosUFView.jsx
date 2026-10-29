@@ -1,12 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { db } from '../firebaseConfig/firebase';
-import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { db, auth } from '../firebaseConfig/firebase';
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where } from 'firebase/firestore';
 
 export default function UsuariosUFView() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
+  const [adminEmail, setAdminEmail] = useState('');
   const [adminPass, setAdminPass] = useState('');
   
-  // Campos del formulario
+  // Gestión de Edificios
+  const [edificios, setEdificios] = useState([]);
+  const [edificioSeleccionado, setEdificioSeleccionado] = useState('');
+  const [nombreNuevoEdificio, setNombreNuevoEdificio] = useState('');
+  const [direccionEdificio, setDireccionEdificio] = useState('');
+
+  // Campos del formulario de Unidades Funcionales
   const [uf, setUf] = useState('');
   const [piso, setPiso] = useState('');
   const [departamento, setDepartamento] = useState('');
@@ -15,15 +23,79 @@ export default function UsuariosUFView() {
   const [telefono, setTelefono] = useState('');
   const [correo, setCorreo] = useState('');
 
-  // Estado para saber si estamos editando
   const [idEditando, setIdEditando] = useState(null);
-  
   const [listaUnidades, setListaUnidades] = useState([]);
 
-  // Cargar unidades desde Firestore
-  const cargarUnidades = async () => {
+  useEffect(() => {
+    if (isAdminLoggedIn) {
+      cargarEdificios();
+    }
+  }, [isAdminLoggedIn]);
+
+  useEffect(() => {
+    if (edificioSeleccionado) {
+      cargarUnidades(edificioSeleccionado);
+    } else {
+      setListaUnidades([]);
+    }
+  }, [edificioSeleccionado]);
+
+  // Login con Firebase Auth
+  const handleAdminLogin = async (e) => {
+    e.preventDefault();
     try {
-      const querySnapshot = await getDocs(collection(db, 'unidades'));
+      await signInWithEmailAndPassword(auth, adminEmail, adminPass);
+      setIsAdminLoggedIn(true);
+    } catch (error) {
+      console.error("Error de autenticación:", error);
+      alert('Correo o contraseña incorrectos.');
+    }
+  };
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    setIsAdminLoggedIn(false);
+    setEdificios([]);
+    setEdificioSeleccionado('');
+  };
+
+  const cargarEdificios = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, 'edificios'));
+      const docs = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setEdificios(docs);
+      if (docs.length > 0 && !edificioSeleccionado) {
+        setEdificioSeleccionado(docs[0].id);
+      }
+    } catch (error) {
+      console.error("Error cargando edificios:", error);
+    }
+  };
+
+  const crearEdificio = async (e) => {
+    e.preventDefault();
+    if (!nombreNuevoEdificio) return;
+    try {
+      const docRef = await addDoc(collection(db, 'edificios'), {
+        nombre: nombreNuevoEdificio,
+        direccion: direccionEdificio,
+        adminId: auth.currentUser?.uid,
+        fechaCreacion: new Date().toISOString()
+      });
+      alert(`Edificio "${nombreNuevoEdificio}" creado con éxito.`);
+      setNombreNuevoEdificio('');
+      setDireccionEdificio('');
+      cargarEdificios();
+      setEdificioSeleccionado(docRef.id);
+    } catch (error) {
+      console.error("Error al crear edificio:", error);
+    }
+  };
+
+  const cargarUnidades = async (edId) => {
+    try {
+      const q = query(collection(db, 'unidades'), where('edificioId', '==', edId));
+      const querySnapshot = await getDocs(q);
       const docs = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setListaUnidades(docs);
     } catch (error) {
@@ -31,38 +103,23 @@ export default function UsuariosUFView() {
     }
   };
 
-  useEffect(() => {
-    if (isAdminLoggedIn) {
-      cargarUnidades();
-    }
-  }, [isAdminLoggedIn]);
-
-  const handleAdminLogin = (e) => {
-    e.preventDefault();
-    const claveCorrecta = import.meta.env.VITE_ADMIN_PASSWORD || 'admin123'; 
-    if (adminPass === claveCorrecta) {
-      setIsAdminLoggedIn(true);
-    } else {
-      alert('Contraseña de administrador incorrecta');
-    }
-  };
-
-  // Crear o Modificar Residente
   const handleGuardarResidente = async (e) => {
     e.preventDefault();
+    if (!edificioSeleccionado) {
+      alert("Seleccioná o creá un edificio primero.");
+      return;
+    }
+
     try {
       if (idEditando) {
-        // Actualizar unidad existente
         const docRef = doc(db, 'unidades', idEditando);
-        await updateDoc(docRef, {
-          uf, piso, departamento, nombre, apellido, telefono, correo
-        });
+        await updateDoc(docRef, { uf, piso, departamento, nombre, apellido, telefono, correo });
         alert(`UF ${uf} actualizada con éxito.`);
         setIdEditando(null);
       } else {
-        // Crear nueva unidad
         const tokenAcceso = btoa(`${uf}_${Date.now()}`);
         await addDoc(collection(db, 'unidades'), {
+          edificioId: edificioSeleccionado,
           uf, piso, departamento, nombre, apellido, telefono, correo,
           token: tokenAcceso,
           fechaAlta: new Date().toISOString()
@@ -71,13 +128,12 @@ export default function UsuariosUFView() {
       }
 
       limpiarFormulario();
-      cargarUnidades();
+      cargarUnidades(edificioSeleccionado);
     } catch (error) {
       console.error("Error al guardar:", error);
     }
   };
 
-  // Cargar datos en el formulario para editar
   const handleEditar = (item) => {
     setIdEditando(item.id);
     setUf(item.uf || '');
@@ -89,13 +145,12 @@ export default function UsuariosUFView() {
     setCorreo(item.correo || '');
   };
 
-  // Eliminar unidad
   const handleEliminar = async (id, ufNombre) => {
     if (window.confirm(`¿Estás seguro de que querés borrar la UF ${ufNombre}?`)) {
       try {
         await deleteDoc(doc(db, 'unidades', id));
         alert('Unidad eliminada correctamente.');
-        cargarUnidades();
+        cargarUnidades(edificioSeleccionado);
       } catch (error) {
         console.error("Error al eliminar:", error);
       }
@@ -115,111 +170,152 @@ export default function UsuariosUFView() {
     window.open(urlWA, '_blank');
   };
 
+  const obtenerUrlTimbreEdificio = () => {
+    return `${window.location.origin}/visitante?edificio=${edificioSeleccionado}`;
+  };
+
   if (!isAdminLoggedIn) {
     return (
-      <div style={{ padding: '20px', maxWidth: '400px', margin: '50px auto', textAlign: 'center' }}>
+      <div style={{ padding: '20px', maxWidth: '400px', margin: '50px auto', textAlign: 'center', fontFamily: 'sans-serif' }}>
         <h2>Acceso Administrador</h2>
         <form onSubmit={handleAdminLogin} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <input 
+            type="email" 
+            placeholder="Correo electrónico" 
+            value={adminEmail} 
+            onChange={(e) => setAdminEmail(e.target.value)} 
+            required 
+            style={{ padding: '8px' }}
+          />
+          <input 
             type="password" 
-            placeholder="Clave Administrador" 
+            placeholder="Contraseña" 
             value={adminPass} 
             onChange={(e) => setAdminPass(e.target.value)} 
             required 
+            style={{ padding: '8px' }}
           />
-          <button type="submit">Ingresar</button>
+          <button type="submit" style={{ padding: '10px', background: '#007bff', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Ingresar</button>
         </form>
       </div>
     );
   }
 
+  const edificioActualObj = edificios.find(e => e.id === edificioSeleccionado);
+
   return (
-    <div style={{ padding: '20px', maxWidth: '1000px', margin: '0 auto' }}>
-      <h2>Panel del Administrador</h2>
+    <div style={{ padding: '20px', maxWidth: '1000px', margin: '0 auto', fontFamily: 'sans-serif' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+        <h2>Panel de Administración Multiedificio</h2>
+        <button onClick={handleLogout} style={{ background: '#dc3545', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '4px', cursor: 'pointer' }}>Cerrar Sesión</button>
+      </div>
       
-      {/* Formulario */}
-      <div style={{ background: '#f9f9f9', padding: '15px', borderRadius: '8px', marginBottom: '25px' }}>
-        <h3>{idEditando ? '✏️ Modificar Unidad Funcional' : '➕ Registrar Nueva UF y Propietario'}</h3>
-        <form onSubmit={handleGuardarResidente} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
-          <input type="text" placeholder="UF (Ej: 2A)" value={uf} onChange={(e) => setUf(e.target.value)} required />
-          <input type="text" placeholder="Piso" value={piso} onChange={(e) => setPiso(e.target.value)} required />
-          <input type="text" placeholder="Departamento" value={departamento} onChange={(e) => setDepartamento(e.target.value)} required />
-          <input type="text" placeholder="Nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} required />
-          <input type="text" placeholder="Apellido" value={apellido} onChange={(e) => setApellido(e.target.value)} required />
-          <input type="text" placeholder="Teléfono (54911...)" value={telefono} onChange={(e) => setTelefono(e.target.value)} required />
-          <input type="email" placeholder="Correo" value={correo} onChange={(e) => setCorreo(e.target.value)} required />
-          
-          <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '10px', marginTop: '10px' }}>
-            <button type="submit" style={{ backgroundColor: idEditando ? '#ffc107' : '#007bff', color: idEditando ? 'black' : 'white', padding: '10px 20px', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
-              {idEditando ? 'Guardar Cambios' : 'Guardar y Generar Acceso'}
-            </button>
-            {idEditando && (
-              <button type="button" onClick={limpiarFormulario} style={{ backgroundColor: '#6c757d', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
-                Cancelar Edición
-              </button>
-            )}
-          </div>
+      {/* SECCIÓN EDIFICIOS */}
+      <div style={{ background: '#e9ecef', padding: '15px', borderRadius: '8px', marginBottom: '20px' }}>
+        <h3>🏢 Seleccionar o Crear Edificio</h3>
+        <select 
+          value={edificioSeleccionado} 
+          onChange={(e) => setEdificioSeleccionado(e.target.value)}
+          style={{ padding: '10px', fontSize: '16px', borderRadius: '4px', width: '100%', marginBottom: '10px' }}
+        >
+          <option value="">-- Seleccioná un Edificio --</option>
+          {edificios.map(ed => (
+            <option key={ed.id} value={ed.id}>{ed.nombre} ({ed.direccion || 'Sin dirección'})</option>
+          ))}
+        </select>
+
+        <form onSubmit={crearEdificio} style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <input type="text" placeholder="Nombre del nuevo edificio" value={nombreNuevoEdificio} onChange={e => setNombreNuevoEdificio(e.target.value)} required style={{ padding: '8px', flex: 2 }} />
+          <input type="text" placeholder="Dirección" value={direccionEdificio} onChange={e => setDireccionEdificio(e.target.value)} style={{ padding: '8px', flex: 2 }} />
+          <button type="submit" style={{ background: '#28a745', color: 'white', border: 'none', padding: '8px 15px', borderRadius: '4px', cursor: 'pointer' }}>➕ Nuevo Edificio</button>
         </form>
       </div>
 
-      {/* Tabla de Usuarios / Unidades */}
-      <h3>Unidades Funcionales Registradas</h3>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', background: 'white', border: '1px solid #ddd' }}>
-          <thead>
-            <tr style={{ backgroundColor: '#f2f2f2' }}>
-              <th style={{ padding: '10px', border: '1px solid #ddd' }}>UF</th>
-              <th style={{ padding: '10px', border: '1px solid #ddd' }}>Ubicación</th>
-              <th style={{ padding: '10px', border: '1px solid #ddd' }}>Propietario</th>
-              <th style={{ padding: '10px', border: '1px solid #ddd' }}>Contacto</th>
-              <th style={{ padding: '10px', border: '1px solid #ddd', textAlign: 'center' }}>Acciones</th>
-            </tr>
-          </thead>
-          <tbody>
-            {listaUnidades.map((item) => (
-              <tr key={item.id}>
-                <td style={{ padding: '10px', border: '1px solid #ddd', fontWeight: 'bold' }}>{item.uf}</td>
-                <td style={{ padding: '10px', border: '1px solid #ddd' }}>Piso {item.piso} - Depto {item.departamento}</td>
-                <td style={{ padding: '10px', border: '1px solid #ddd' }}>{item.nombre} {item.apellido}</td>
-                <td style={{ padding: '10px', border: '1px solid #ddd' }}>
-                  📞 {item.telefono}<br/>
-                  ✉️ {item.correo}
-                </td>
-                <td style={{ padding: '10px', border: '1px solid #ddd', textAlign: 'center' }}>
-                  <div style={{ display: 'flex', gap: '5px', justifyContent: 'center' }}>
-                    <button 
-                      onClick={() => enviarLinkWhatsApp(item)} 
-                      title="Enviar Link WhatsApp" 
-                      style={{ backgroundColor: '#25D366', color: 'white', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer' }}
-                    >
-                      📲
-                    </button>
-                    <button 
-                      onClick={() => handleEditar(item)} 
-                      title="Editar" 
-                      style={{ backgroundColor: '#ffc107', color: 'black', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer' }}
-                    >
-                      ✏️
-                    </button>
-                    <button 
-                      onClick={() => handleEliminar(item.id, item.uf)} 
-                      title="Eliminar" 
-                      style={{ backgroundColor: '#dc3545', color: 'white', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer' }}
-                    >
-                      🗑️
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {listaUnidades.length === 0 && (
-              <tr>
-                <td colSpan="5" style={{ textAlign: 'center', padding: '15px' }}>No hay unidades registradas todavía.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      {edificioSeleccionado && (
+        <>
+          {/* SECCIÓN QR */}
+          <div style={{ background: '#e2f0d9', padding: '15px', borderRadius: '8px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px' }}>
+            <div>
+              <h3 style={{ margin: '0 0 5px 0' }}>📱 Código QR Puerta: {edificioActualObj?.nombre}</h3>
+              <p style={{ margin: 0, fontSize: '13px', color: '#555' }}>Escanealo para ir directo a la vista del visitante de este edificio.</p>
+            </div>
+            <a 
+              href={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(obtenerUrlTimbreEdificio())}`} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              style={{ background: '#007bff', color: 'white', padding: '10px 15px', textDecoration: 'none', borderRadius: '5px', fontWeight: 'bold', fontSize: '14px' }}
+            >
+              🖼️ Ver / Descargar QR
+            </a>
+          </div>
+
+          {/* FORMULARIO UF */}
+          <div style={{ background: '#f9f9f9', padding: '15px', borderRadius: '8px', marginBottom: '25px' }}>
+            <h3>{idEditando ? '✏️ Modificar Unidad Funcional' : '➕ Registrar Nueva UF'}</h3>
+            <form onSubmit={handleGuardarResidente} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
+              <input type="text" placeholder="UF (Ej: 2A)" value={uf} onChange={(e) => setUf(e.target.value)} required style={{ padding: '8px' }} />
+              <input type="text" placeholder="Piso" value={piso} onChange={(e) => setPiso(e.target.value)} required style={{ padding: '8px' }} />
+              <input type="text" placeholder="Departamento" value={departamento} onChange={(e) => setDepartamento(e.target.value)} required style={{ padding: '8px' }} />
+              <input type="text" placeholder="Nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} required style={{ padding: '8px' }} />
+              <input type="text" placeholder="Apellido" value={apellido} onChange={(e) => setApellido(e.target.value)} required style={{ padding: '8px' }} />
+              <input type="text" placeholder="Teléfono (54911...)" value={telefono} onChange={(e) => setTelefono(e.target.value)} required style={{ padding: '8px' }} />
+              <input type="email" placeholder="Correo" value={correo} onChange={(e) => setCorreo(e.target.value)} required style={{ padding: '8px' }} />
+              
+              <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '10px', marginTop: '10px' }}>
+                <button type="submit" style={{ backgroundColor: idEditando ? '#ffc107' : '#007bff', color: idEditando ? 'black' : 'white', padding: '10px 20px', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
+                  {idEditando ? 'Guardar Cambios' : 'Guardar y Generar Acceso'}
+                </button>
+                {idEditando && (
+                  <button type="button" onClick={limpiarFormulario} style={{ backgroundColor: '#6c757d', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
+                    Cancelar
+                  </button>
+                )}
+              </div>
+            </form>
+          </div>
+
+          {/* TABLA DE UNIDADES */}
+          <h3>Unidades Funcionales de {edificioActualObj?.nombre}</h3>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', background: 'white', border: '1px solid #ddd' }}>
+              <thead>
+                <tr style={{ backgroundColor: '#f2f2f2' }}>
+                  <th style={{ padding: '10px', border: '1px solid #ddd' }}>UF</th>
+                  <th style={{ padding: '10px', border: '1px solid #ddd' }}>Ubicación</th>
+                  <th style={{ padding: '10px', border: '1px solid #ddd' }}>Propietario</th>
+                  <th style={{ padding: '10px', border: '1px solid #ddd' }}>Contacto</th>
+                  <th style={{ padding: '10px', border: '1px solid #ddd', textAlign: 'center' }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {listaUnidades.map((item) => (
+                  <tr key={item.id}>
+                    <td style={{ padding: '10px', border: '1px solid #ddd', fontWeight: 'bold' }}>{item.uf}</td>
+                    <td style={{ padding: '10px', border: '1px solid #ddd' }}>Piso {item.piso} - Depto {item.departamento}</td>
+                    <td style={{ padding: '10px', border: '1px solid #ddd' }}>{item.nombre} {item.apellido}</td>
+                    <td style={{ padding: '10px', border: '1px solid #ddd' }}>
+                      📞 {item.telefono}<br/>
+                      ✉️ {item.correo}
+                    </td>
+                    <td style={{ padding: '10px', border: '1px solid #ddd', textAlign: 'center' }}>
+                      <div style={{ display: 'flex', gap: '5px', justifyContent: 'center' }}>
+                        <button onClick={() => enviarLinkWhatsApp(item)} title="Enviar Link WhatsApp" style={{ backgroundColor: '#25D366', color: 'white', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer' }}>📲</button>
+                        <button onClick={() => handleEditar(item)} title="Editar" style={{ backgroundColor: '#ffc107', color: 'black', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer' }}>✏️</button>
+                        <button onClick={() => handleEliminar(item.id, item.uf)} title="Eliminar" style={{ backgroundColor: '#dc3545', color: 'white', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer' }}>🗑️</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {listaUnidades.length === 0 && (
+                  <tr>
+                    <td colSpan="5" style={{ textAlign: 'center', padding: '15px', color: '#666' }}>No hay unidades registradas en este edificio todavía.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
   );
 }
