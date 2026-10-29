@@ -11,6 +11,7 @@ export default function VisitanteView() {
   const [enRango, setEnRango] = useState(false);
   const [verificandoUbicacion, setVerificandoUbicacion] = useState(true);
   const [distanciaError, setDistanciaError] = useState('');
+  const [distanciaActualMetros, setDistanciaActualMetros] = useState(null);
 
   // UF Seleccionada y tipo de llamada
   const [ufSeleccionada, setUfSeleccionada] = useState(null);
@@ -37,7 +38,17 @@ export default function VisitanteView() {
       if (docSnap.exists()) {
         const edData = docSnap.data();
         setEdificioInfo(edData);
-        verificarGeolocalizacion(edData.lat || -34.3400, edData.lng || -58.8000);
+        
+        // Nos aseguramos de parsear a Número por si se guardaron como texto
+        const latEdificio = Number(edData.lat);
+        const lngEdificio = Number(edData.lng);
+
+        if (!isNaN(latEdificio) && !isNaN(lngEdificio)) {
+          verificarGeolocalizacion(latEdificio, lngEdificio);
+        } else {
+          setDistanciaError("El edificio no tiene registradas coordenadas GPS válidas.");
+          setVerificandoUbicacion(false);
+        }
       } else {
         setDistanciaError("El edificio no existe o fue eliminado.");
         setVerificandoUbicacion(false);
@@ -67,24 +78,25 @@ export default function VisitanteView() {
       (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
-        const radioPermitidoMetros = 60;
+        const radioPermitidoMetros = 150; // Ampliado temporalmente a 150m para pruebas cómodas
 
         const distancia = calcularDistanciaMetros(lat, lng, edificioLat, edificioLng);
+        setDistanciaActualMetros(Math.round(distancia));
         
         if (distancia <= radioPermitidoMetros) {
           setEnRango(true);
         } else {
           setEnRango(false);
-          setDistanciaError(`Estás demasiado lejos de la entrada (${Math.round(distancia)}m). Debes estar en la puerta del edificio para llamar.`);
+          setDistanciaError(`Estás a ${Math.round(distancia)}m del edificio (Máximo permitido: ${radioPermitidoMetros}m). Acercate a la entrada para llamar.`);
         }
         setVerificandoUbicacion(false);
       },
       (error) => {
         console.error("Error GPS:", error);
-        setDistanciaError("No pudimos obtener tu ubicación. Asegurate de dar permisos de GPS en tu navegador.");
+        setDistanciaError("No pudimos obtener tu ubicación GPS. Asegurate de dar permisos en tu navegador/celular.");
         setVerificandoUbicacion(false);
       },
-      { enableHighAccuracy: true }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
   };
 
@@ -119,7 +131,7 @@ export default function VisitanteView() {
     return (
       <div style={{ padding: '30px', textAlign: 'center', fontFamily: 'sans-serif' }}>
         <h3>📍 Verificando ubicación en la entrada...</h3>
-        <p>Por favor, permití el acceso al GPS.</p>
+        <p>Por favor, permití el acceso al GPS en tu dispositivo.</p>
       </div>
     );
   }
@@ -129,6 +141,9 @@ export default function VisitanteView() {
       <div style={{ padding: '30px', textAlign: 'center', maxWidth: '400px', margin: '40px auto', fontFamily: 'sans-serif', background: '#fff3cd', borderRadius: '8px', border: '1px solid #ffeeba' }}>
         <h2>🚫 Fuera de rango</h2>
         <p>{distanciaError}</p>
+        {distanciaActualMetros !== null && (
+          <p style={{ fontSize: '12px', color: '#555' }}>Distancia calculada actual: <strong>{distanciaActualMetros} metros</strong></p>
+        )}
         <button onClick={() => window.location.reload()} style={{ background: '#007bff', color: 'white', border: 'none', padding: '10px 15px', borderRadius: '5px', cursor: 'pointer', marginTop: '10px' }}>
           🔄 Reintentar
         </button>
@@ -139,7 +154,7 @@ export default function VisitanteView() {
   return (
     <div style={{ padding: '20px', maxWidth: '500px', margin: '0 auto', fontFamily: 'sans-serif' }}>
       <h2>🚪 Timbre - {edificioInfo?.nombre || 'Edificio'}</h2>
-      <p style={{ color: '#28a745', fontSize: '14px', fontWeight: 'bold' }}>✅ Ubicación verificada en puerta</p>
+      <p style={{ color: '#28a745', fontSize: '14px', fontWeight: 'bold' }}>✅ Ubicación verificada en puerta ({distanciaActualMetros}m)</p>
 
       {!ufSeleccionada ? (
         <div>

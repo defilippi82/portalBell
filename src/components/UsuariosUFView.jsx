@@ -8,11 +8,14 @@ export default function UsuariosUFView() {
   const [adminEmail, setAdminEmail] = useState('');
   const [adminPass, setAdminPass] = useState('');
   
-  // Gestión de Edificios
+  // Gestión de Edificios y GPS
   const [edificios, setEdificios] = useState([]);
   const [edificioSeleccionado, setEdificioSeleccionado] = useState('');
   const [nombreNuevoEdificio, setNombreNuevoEdificio] = useState('');
   const [direccionEdificio, setDireccionEdificio] = useState('');
+  const [latitud, setLatitud] = useState('');
+  const [longitud, setLongitud] = useState('');
+  const [obteniendoGps, setObteniendoGps] = useState(false);
 
   // Campos del formulario de Unidades Funcionales
   const [uf, setUf] = useState('');
@@ -72,19 +75,52 @@ export default function UsuariosUFView() {
     }
   };
 
+  // Capturar coordenadas GPS actuales desde el navegador/celular
+  const obtenerUbicacionGps = () => {
+    if (!navigator.geolocation) {
+      alert("Tu navegador no soporta geolocalización.");
+      return;
+    }
+    setObteniendoGps(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setLatitud(position.coords.latitude);
+        setLongitud(position.coords.longitude);
+        setObteniendoGps(false);
+        alert("¡Ubicación GPS capturada con éxito!");
+      },
+      (error) => {
+        console.error("Error GPS:", error);
+        alert("No se pudo obtener la ubicación. Asegurate de dar permisos de GPS.");
+        setObteniendoGps(false);
+      },
+      { enableHighAccuracy: true }
+    );
+  };
+
   const crearEdificio = async (e) => {
     e.preventDefault();
     if (!nombreNuevoEdificio) return;
+    
+    if (!latitud || !longitud) {
+      alert("Por favor, capturá las coordenadas GPS de la entrada del edificio para habilitar el QR.");
+      return;
+    }
+
     try {
       const docRef = await addDoc(collection(db, 'edificios'), {
         nombre: nombreNuevoEdificio,
         direccion: direccionEdificio,
+        lat: parseFloat(latitud),
+        lng: parseFloat(longitud),
         adminId: auth.currentUser?.uid,
         fechaCreacion: new Date().toISOString()
       });
       alert(`Edificio "${nombreNuevoEdificio}" creado con éxito.`);
       setNombreNuevoEdificio('');
       setDireccionEdificio('');
+      setLatitud('');
+      setLongitud('');
       cargarEdificios();
       setEdificioSeleccionado(docRef.id);
     } catch (error) {
@@ -216,7 +252,7 @@ export default function UsuariosUFView() {
         <select 
           value={edificioSeleccionado} 
           onChange={(e) => setEdificioSeleccionado(e.target.value)}
-          style={{ padding: '10px', fontSize: '16px', borderRadius: '4px', width: '100%', marginBottom: '10px' }}
+          style={{ padding: '10px', fontSize: '16px', borderRadius: '4px', width: '100%', marginBottom: '15px' }}
         >
           <option value="">-- Seleccioná un Edificio --</option>
           {edificios.map(ed => (
@@ -224,29 +260,48 @@ export default function UsuariosUFView() {
           ))}
         </select>
 
-        <form onSubmit={crearEdificio} style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-          <input type="text" placeholder="Nombre del nuevo edificio" value={nombreNuevoEdificio} onChange={e => setNombreNuevoEdificio(e.target.value)} required style={{ padding: '8px', flex: 2 }} />
-          <input type="text" placeholder="Dirección" value={direccionEdificio} onChange={e => setDireccionEdificio(e.target.value)} style={{ padding: '8px', flex: 2 }} />
-          <button type="submit" style={{ background: '#28a745', color: 'white', border: 'none', padding: '8px 15px', borderRadius: '4px', cursor: 'pointer' }}>➕ Nuevo Edificio</button>
+        <form onSubmit={crearEdificio} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <input type="text" placeholder="Nombre del nuevo edificio" value={nombreNuevoEdificio} onChange={e => setNombreNuevoEdificio(e.target.value)} required style={{ padding: '8px', flex: 2 }} />
+            <input type="text" placeholder="Dirección" value={direccionEdificio} onChange={e => setDireccionEdificio(e.target.value)} style={{ padding: '8px', flex: 2 }} />
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', background: '#fff', padding: '10px', borderRadius: '5px', border: '1px solid #ccc' }}>
+            <button type="button" onClick={obtenerUbicacionGps} style={{ background: '#17a2b8', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
+              {obteniendoGps ? '📍 Obteniendo GPS...' : '📍 Capturar Ubicación GPS Actual'}
+            </button>
+            <input type="text" placeholder="Latitud" value={latitud} onChange={e => setLatitud(e.target.value)} required style={{ padding: '6px', width: '120px' }} />
+            <input type="text" placeholder="Longitud" value={longitud} onChange={e => setLongitud(e.target.value)} required style={{ padding: '6px', width: '120px' }} />
+          </div>
+
+          <button type="submit" style={{ background: '#28a745', color: 'white', border: 'none', padding: '10px 15px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', marginTop: '5px' }}>
+            ➕ Registrar Nuevo Edificio
+          </button>
         </form>
       </div>
 
       {edificioSeleccionado && (
         <>
           {/* SECCIÓN QR */}
-          <div style={{ background: '#e2f0d9', padding: '15px', borderRadius: '8px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px' }}>
-            <div>
-              <h3 style={{ margin: '0 0 5px 0' }}>📱 Código QR Puerta: {edificioActualObj?.nombre}</h3>
-              <p style={{ margin: 0, fontSize: '13px', color: '#555' }}>Escanealo para ir directo a la vista del visitante de este edificio.</p>
+          <div style={{ background: '#e2f0d9', padding: '15px', borderRadius: '8px', marginBottom: '20px', textAlign: 'center' }}>
+            <h3 style={{ margin: '0 0 5px 0' }}>📱 Código QR Puerta: {edificioActualObj?.nombre}</h3>
+            <p style={{ margin: '0 0 15px 0', fontSize: '13px', color: '#555' }}>Escanealo en la entrada del edificio para validar el acceso por geolocalización.</p>
+            
+            <div style={{ background: 'white', display: 'inline-block', padding: '15px', borderRadius: '8px', boxShadow: '0 2px 5px rgba(0,0,0,0.1)' }}>
+              <img 
+                src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(obtenerUrlTimbreEdificio())}`} 
+                alt="QR de acceso al edificio" 
+                style={{ display: 'block', margin: '0 auto 12px auto' }}
+              />
+              <a 
+                href={`https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(obtenerUrlTimbreEdificio())}`} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                style={{ background: '#007bff', color: 'white', padding: '8px 15px', textDecoration: 'none', borderRadius: '4px', fontWeight: 'bold', fontSize: '13px', display: 'inline-block' }}
+              >
+                📥 Descargar QR en Alta Resolución
+              </a>
             </div>
-            <a 
-              href={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(obtenerUrlTimbreEdificio())}`} 
-              target="_blank" 
-              rel="noopener noreferrer"
-              style={{ background: '#007bff', color: 'white', padding: '10px 15px', textDecoration: 'none', borderRadius: '5px', fontWeight: 'bold', fontSize: '14px' }}
-            >
-              🖼️ Ver / Descargar QR
-            </a>
           </div>
 
           {/* FORMULARIO UF */}
