@@ -26,9 +26,10 @@ export const solicitarPermisoNotificaciones = async (userId) => {
     const permission = await Notification.requestPermission();
     if (permission === 'granted') {
       // Reemplazá 'TU_CLAVE_VAPID' por la clave que generaste en la consola de Firebase
+      //BIR35y7cfbhMCDP4AadlxB6VHMVDIYG4rBFELRGtuzPfBf1qoOCkMwR2-mluK-8kd8x9syysZkp48mPmaBpoqT0
       const currentToken = await getToken(messaging, { 
-        vapidKey: 'TU_CLAVE_VAPID_DE_FIREBASE' 
-      });
+  vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY 
+});
       
       if (currentToken) {
         console.log('Token FCM obtenido:', currentToken);
