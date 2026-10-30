@@ -159,7 +159,6 @@ export default function VisitanteView() {
       });
       setLlamadaId(llamadaRef.id);
 
-      // Si selecciona video, activamos la cámara frontal del visitante
       if (tipo === 'video') {
         activarCamaraVisitante();
       }
@@ -303,13 +302,20 @@ export default function VisitanteView() {
                     {mensajesChat.length > 0 ? (
                       mensajesChat.map((m, i) => (
                         <div key={i} style={{ marginBottom: '8px', textAlign: m.remitente === 'visitante' ? 'right' : 'left' }}>
-                          <span style={{ display: 'inline-block', background: m.remitente === 'visitante' ? '#007bff' : '#28a745', color: 'white', padding: '6px 10px', borderRadius: '8px', fontSize: '13px' }}>
+                          <span style={{ 
+                            display: 'inline-block', 
+                            background: m.remitente === 'visitante' ? '#007bff' : '#28a745', 
+                            color: 'white', 
+                            padding: '6px 10px', 
+                            borderRadius: '8px', 
+                            fontSize: '13px' 
+                          }}>
                             {m.texto}
                           </span>
                         </div>
                       ))
                     ) : (
-                      <p style={{ textAlign: 'center', color: '#999', fontSize: '12px' }}>Esperando respuesta del residente...</p>
+                      <p style={{ textAlign: 'center', color: '#999', fontSize: '12px' }}>Iniciá la conversación con el residente...</p>
                     )}
                   </div>
                   <form onSubmit={enviarMensajeChat} style={{ display: 'flex', gap: '5px' }}>
