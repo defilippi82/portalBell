@@ -434,7 +434,7 @@ export default function ResidenteView() {
         <p style={{ fontSize: '13px', color: '#555' }}>Respuestas rápidas para enviar al visitante:</p>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
           {mensajesPredeterminados.map((msg, index) => (
-            <button key={index} onClick={() => enviarMensajeRapido(msg)} style={{ padding: '8px', background: 'white', border: '1px solid #28a745', borderRadius: '4px', cursor: 'pointer', textAlign: 'left', fontSize: '12px' }}>
+            <button key={index} onClick={() => enviarMensajeRapido(msg)} style={{ padding: '8px', background: 'white',color: "darkred", border: '1px solid #28a745', borderRadius: '4px', cursor: 'pointer', textAlign: 'left', fontSize: '12px' }}>
               💬 {msg}
             </button>
           ))}
