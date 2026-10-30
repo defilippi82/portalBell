@@ -9,7 +9,7 @@ export default function ResidenteView() {
   
   // Estados del Residente
   const [estadoCasa, setEstadoCasa] = useState('en_casa');
-  const [pushHabilitado, setPushHabilitado] = useState(true);
+  const [pushHabilitado, setPushHabilitado] = useState(false);
   
   // Gestión de Sub-usuarios (Cohabitantes con WhatsApp y Token)
   const [subUsuarios, setSubUsuarios] = useState([]);
@@ -168,7 +168,7 @@ export default function ResidenteView() {
     setEnVideollamada(false);
   };
 
-  const handleTogglePush = async () => {
+ const handleTogglePush = async () => {
     if (!pushHabilitado) {
       try {
         if (!('Notification' in window)) {
@@ -179,13 +179,24 @@ export default function ResidenteView() {
         if (permiso === 'granted') {
           const messaging = getMessaging();
           const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY;
-          if (vapidKey) {
-            await getToken(messaging, { vapidKey });
+          
+          if (vapidKey && ufData) {
+            const currentToken = await getToken(messaging, { vapidKey });
+            if (currentToken) {
+              // 🔑 GUARDAMOS EL TOKEN EN FIRESTORE EN LA UNIDAD CORRESPONDIENTE
+              await updateDoc(doc(db, 'unidades', ufData.id), {
+                fcmToken: currentToken
+              });
+              console.log("Token FCM guardado correctamente en la UF:", currentToken);
+            }
           }
           setPushHabilitado(true);
+          alert("¡Notificaciones push activadas correctamente!");
+        } else {
+          alert("Debes permitir las notificaciones para recibir alertas de timbre.");
         }
       } catch (error) {
-        console.error("Error push:", error);
+        console.error("Error al registrar push:", error);
       }
     } else {
       setPushHabilitado(false);
