@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { db } from '../firebaseConfig/firebase';
 import { collection, getDocs, doc, getDoc, query, where, addDoc, onSnapshot, orderBy, updateDoc } from 'firebase/firestore';
 
@@ -22,6 +22,10 @@ export default function VisitanteView() {
   const [mensajesChat, setMensajesChat] = useState([]);
   const [nuevoMensaje, setNuevoMensaje] = useState('');
 
+  // Referencias para la Videollamada (Cámara del visitante)
+  const visitanteVideoRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const idEdificioUrl = params.get('edificio');
@@ -35,7 +39,7 @@ export default function VisitanteView() {
     }
   }, []);
 
-  // Escuchar el estado de la llamada y los mensajes en tiempo real para el visitante
+  // Escuchar el estado de la llamada y los mensajes en tiempo real
   useEffect(() => {
     if (!llamadaId) return;
 
@@ -45,8 +49,7 @@ export default function VisitanteView() {
         const data = docSnap.data();
         if (data.estado === 'finalizado') {
           alert("La llamada fue finalizada por el residente.");
-          setModoLlamada(null);
-          setLlamadaId(null);
+          cerrarVideollamada();
         }
       }
     });
@@ -155,9 +158,36 @@ export default function VisitanteView() {
         fecha: new Date().toISOString()
       });
       setLlamadaId(llamadaRef.id);
+
+      // Si selecciona video, activamos la cámara frontal del visitante
+      if (tipo === 'video') {
+        activarCamaraVisitante();
+      }
     } catch (e) {
       console.error("Error iniciando sesión:", e);
     }
+  };
+
+  const activarCamaraVisitante = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      mediaStreamRef.current = stream;
+      if (visitanteVideoRef.current) {
+        visitanteVideoRef.current.srcObject = stream;
+      }
+    } catch (err) {
+      console.error("Error al acceder a la cámara:", err);
+      alert("No se pudo acceder a la cámara. Verificá los permisos del navegador.");
+    }
+  };
+
+  const cerrarVideollamada = () => {
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    setModoLlamada(null);
+    setLlamadaId(null);
   };
 
   const enviarMensajeChat = async (e) => {
@@ -185,8 +215,7 @@ export default function VisitanteView() {
         console.error("Error al finalizar llamada:", e);
       }
     }
-    setModoLlamada(null);
-    setLlamadaId(null);
+    cerrarVideollamada();
   };
 
   if (verificandoUbicacion) {
@@ -248,7 +277,7 @@ export default function VisitanteView() {
       ) : (
         <div style={{ background: '#f8f9fa', padding: '20px', borderRadius: '8px', border: '1px solid #ddd', textAlign: 'center' }}>
           <h3>UF Seleccionada: {ufSeleccionada.uf}</h3>
-          <p>Destinatario: {ufSeleccionada.piso} {ufSeleccionada.departamento ? `${ufSeleccionada.departamento.charAt(0)}.` : ''}</p>
+          <p>Destinatario: {ufSeleccionada.nombre} {ufSeleccionada.apellido ? `${ufSeleccionada.apellido.charAt(0)}.` : ''}</p>
 
           {!modoLlamada ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '20px' }}>
@@ -296,8 +325,11 @@ export default function VisitanteView() {
                 </div>
               ) : (
                 <div style={{ textAlign: 'center' }}>
-                  <div style={{ background: '#000', color: '#fff', height: '160px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '4px', marginBottom: '10px' }}>
-                    [ Canal de Video / Audio Activo ]
+                  <div style={{ background: '#000', borderRadius: '6px', overflow: 'hidden', marginBottom: '10px', position: 'relative' }}>
+                    <video ref={visitanteVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '200px', objectFit: 'cover' }} />
+                    <div style={{ position: 'absolute', bottom: '10px', left: '10px', background: 'rgba(0,0,0,0.6)', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>
+                      🔴 Transmitiendo a la UF {ufSeleccionada.uf}
+                    </div>
                   </div>
                 </div>
               )}
