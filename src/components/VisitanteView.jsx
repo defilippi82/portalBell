@@ -113,7 +113,7 @@ export default function VisitanteView() {
       (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
-        const radioPermitidoMetros = 150;
+        const radioPermitidoMetros = 150000; // 150000 metros prueba, cambiar a 15 metros en producción
 
         const distancia = calcularDistanciaMetros(lat, lng, edificioLat, edificioLng);
         setDistanciaActualMetros(Math.round(distancia));
