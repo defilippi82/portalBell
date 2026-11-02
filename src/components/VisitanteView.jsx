@@ -189,8 +189,8 @@ export default function VisitanteView() {
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
       pc.ontrack = (event) => {
-        if (remoteVideoRef.current && event.streams[0]) {
-          remoteVideoRef.current.srcObject = event.streams[0];
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = event.streams[0] || new MediaStream([event.track]);
         }
       };
 
@@ -208,9 +208,10 @@ export default function VisitanteView() {
         offer: { type: offer.type, sdp: offer.sdp }
       });
 
+      // Escuchar la respuesta (Answer) del residente en tiempo real
       onSnapshot(doc(db, 'llamadas', callId), async (snapshot) => {
         const data = snapshot.data();
-        if (!pc.currentRemoteDescription && data?.answer) {
+        if (data?.answer && !pc.currentRemoteDescription) {
           const answer = new RTCSessionDescription(data.answer);
           await pc.setRemoteDescription(answer);
         }

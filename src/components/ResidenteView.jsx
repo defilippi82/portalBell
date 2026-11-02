@@ -177,7 +177,7 @@ export default function ResidenteView() {
     }
   };
 
-  const conectarWebRTCResidente = async (callId, localStream) => {
+ const conectarWebRTCResidente = async (callId, localStream) => {
     try {
       const pc = new RTCPeerConnection(servers);
       peerConnectionRef.current = pc;
@@ -185,8 +185,8 @@ export default function ResidenteView() {
       localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
       pc.ontrack = (event) => {
-        if (remoteVideoRef.current && event.streams[0]) {
-          remoteVideoRef.current.srcObject = event.streams[0];
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = event.streams[0] || new MediaStream([event.track]);
         }
       };
 
@@ -197,21 +197,23 @@ export default function ResidenteView() {
         }
       };
 
-      // Obtener la Offer del visitante desde Firestore
+      // Escuchar la Offer del visitante en tiempo real para evitar fallos de sincronización
       const callDocRef = doc(db, 'llamadas', callId);
-      const callSnap = await getDoc(callDocRef);
-      if (callSnap.exists()) {
-        const data = callSnap.data();
-        if (data.offer) {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
+      const unsubscribeOffer = onSnapshot(callDocRef, async (callSnap) => {
+        if (callSnap.exists()) {
+          const data = callSnap.data();
+          if (data.offer && !pc.currentRemoteDescription) {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
 
-          await updateDoc(callDocRef, {
-            answer: { type: answer.type, sdp: answer.sdp }
-          });
+            await updateDoc(callDocRef, {
+              answer: { type: answer.type, sdp: answer.sdp }
+            });
+            unsubscribeOffer();
+          }
         }
-      }
+      });
 
       // Escuchar candidatos ICE del visitante
       const visitorCandidatesCol = collection(db, 'llamadas', callId, 'visitorCandidates');
