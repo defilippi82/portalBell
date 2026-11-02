@@ -1,4 +1,4 @@
-const {onDocumentCreated} = require("firebase-functions/v2/firestore");
+const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
 admin.initializeApp();
 
@@ -11,7 +11,6 @@ exports.notificarTimbre = onDocumentCreated("llamadas/{llamadoId}", async (event
   const edificioId = llamada.edificioId;
 
   try {
-    // Buscamos la unidad correspondiente en Firestore
     const unidadesRef = admin.firestore().collection("unidades");
     const snapshot = await unidadesRef
       .where("edificioId", "==", edificioId)
@@ -21,7 +20,6 @@ exports.notificarTimbre = onDocumentCreated("llamadas/{llamadoId}", async (event
     const tokens = [];
     snapshot.forEach((doc) => {
       const unidad = doc.data();
-      // Si la unidad tiene un fcmToken guardado, lo agregamos
       if (unidad.fcmToken) {
         tokens.push(unidad.fcmToken);
       }
@@ -32,10 +30,12 @@ exports.notificarTimbre = onDocumentCreated("llamadas/{llamadoId}", async (event
       return null;
     }
 
+    // Usamos 'data' para que el Service Worker despierte y dibuje la notificación con sonido/vibración
     const mensaje = {
-      notification: {
+      data: {
         title: "🔔 ¡Están tocando el timbre!",
-        body: `Tenés una visita en la puerta (${llamada.tipo}).`,
+        body: `Tenés una visita esperando en la puerta (${llamada.tipo}).`,
+        click_action: `https://portalbell.vercel.app/residente?uf=${ufBuscada}`
       },
       tokens: tokens,
     };

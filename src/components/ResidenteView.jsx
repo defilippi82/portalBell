@@ -9,7 +9,7 @@ export default function ResidenteView() {
   
   // Estados del Residente
   const [estadoCasa, setEstadoCasa] = useState('en_casa');
-  const [pushHabilitado, setPushHabilitado] = useState(false);
+  const [pushHabilitado, setPushHabilitado] = useState(true);
   
   // Gestión de Sub-usuarios (Cohabitantes con WhatsApp y Token)
   const [subUsuarios, setSubUsuarios] = useState([]);
