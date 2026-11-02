@@ -22,9 +22,17 @@ export default function VisitanteView() {
   const [mensajesChat, setMensajesChat] = useState([]);
   const [nuevoMensaje, setNuevoMensaje] = useState('');
 
-  // Referencias para la Videollamada (Cámara del visitante)
+  // Referencias para la Videollamada y WebRTC
   const visitanteVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
   const mediaStreamRef = useRef(null);
+  const peerConnectionRef = useRef(null);
+
+  const servers = {
+    iceServers: [
+      { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
+    ]
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -113,7 +121,7 @@ export default function VisitanteView() {
       (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
-        const radioPermitidoMetros = 150000; // 150000 metros prueba, cambiar a 15 metros en producción
+        const radioPermitidoMetros = 150000; // 150000 metros prueba desde la oficina
 
         const distancia = calcularDistanciaMetros(lat, lng, edificioLat, edificioLng);
         setDistanciaActualMetros(Math.round(distancia));
@@ -160,23 +168,67 @@ export default function VisitanteView() {
       setLlamadaId(llamadaRef.id);
 
       if (tipo === 'video') {
-        activarCamaraVisitante();
+        iniciarWebRTCVisitante(llamadaRef.id);
       }
     } catch (e) {
-      console.error("Error iniciando sesión:", e);
+      console.error("Error iniciando llamada:", e);
     }
   };
 
-  const activarCamaraVisitante = async () => {
+  const iniciarWebRTCVisitante = async (callId) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       mediaStreamRef.current = stream;
       if (visitanteVideoRef.current) {
         visitanteVideoRef.current.srcObject = stream;
       }
+
+      const pc = new RTCPeerConnection(servers);
+      peerConnectionRef.current = pc;
+
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+      pc.ontrack = (event) => {
+        if (remoteVideoRef.current && event.streams[0]) {
+          remoteVideoRef.current.srcObject = event.streams[0];
+        }
+      };
+
+      const candidateCollection = collection(db, 'llamadas', callId, 'visitorCandidates');
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          addDoc(candidateCollection, event.candidate.toJSON());
+        }
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      await updateDoc(doc(db, 'llamadas', callId), {
+        offer: { type: offer.type, sdp: offer.sdp }
+      });
+
+      onSnapshot(doc(db, 'llamadas', callId), async (snapshot) => {
+        const data = snapshot.data();
+        if (!pc.currentRemoteDescription && data?.answer) {
+          const answer = new RTCSessionDescription(data.answer);
+          await pc.setRemoteDescription(answer);
+        }
+      });
+
+      const residentCandidatesCol = collection(db, 'llamadas', callId, 'residentCandidates');
+      onSnapshot(residentCandidatesCol, (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            const candidate = new RTCIceCandidate(change.doc.data());
+            pc.addIceCandidate(candidate).catch(e => console.error(e));
+          }
+        });
+      });
+
     } catch (err) {
-      console.error("Error al acceder a la cámara:", err);
-      alert("No se pudo acceder a la cámara. Verificá los permisos del navegador.");
+      console.error("Error en WebRTC Visitante:", err);
+      alert("No se pudo iniciar la videollamada. Verificá los permisos de cámara y micrófono.");
     }
   };
 
@@ -184,6 +236,10 @@ export default function VisitanteView() {
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
       mediaStreamRef.current = null;
+    }
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
     }
     setModoLlamada(null);
     setLlamadaId(null);
@@ -331,10 +387,19 @@ export default function VisitanteView() {
                 </div>
               ) : (
                 <div style={{ textAlign: 'center' }}>
-                  <div style={{ background: '#000', borderRadius: '6px', overflow: 'hidden', marginBottom: '10px', position: 'relative' }}>
-                    <video ref={visitanteVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '200px', objectFit: 'cover' }} />
-                    <div style={{ position: 'absolute', bottom: '10px', left: '10px', background: 'rgba(0,0,0,0.6)', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>
-                      🔴 Transmitiendo a la UF {ufSeleccionada.uf}
+                  {/* Vista previa del residente que llega */}
+                  <div style={{ background: '#000', borderRadius: '6px', overflow: 'hidden', marginBottom: '10px', position: 'relative', height: '180px' }}>
+                    <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <div style={{ position: 'absolute', bottom: '8px', left: '8px', background: 'rgba(0,0,0,0.6)', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>
+                      👤 Residente (UF {ufSeleccionada.uf})
+                    </div>
+                  </div>
+
+                  {/* Tu propia cámara como miniatura */}
+                  <div style={{ background: '#222', borderRadius: '6px', overflow: 'hidden', position: 'relative', height: '90px', width: '120px', margin: '0 auto' }}>
+                    <video ref={visitanteVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <div style={{ position: 'absolute', bottom: '4px', left: '4px', background: 'rgba(0,0,0,0.6)', color: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '9px' }}>
+                      Tu cámara
                     </div>
                   </div>
                 </div>

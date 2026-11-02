@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db } from '../firebaseConfig/firebase';
-import { collection, query, where, getDocs, addDoc, updateDoc, doc, deleteDoc, onSnapshot, orderBy } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, doc, deleteDoc, onSnapshot, orderBy, getDoc } from 'firebase/firestore';
 import { getMessaging, getToken } from 'firebase/messaging';
 
 export default function ResidenteView() {
@@ -9,7 +9,7 @@ export default function ResidenteView() {
   
   // Estados del Residente
   const [estadoCasa, setEstadoCasa] = useState('en_casa');
-  const [pushHabilitado, setPushHabilitado] = useState(true);
+  const [pushHabilitado, setPushHabilitado] = useState(false);
   
   // Gestión de Sub-usuarios (Cohabitantes con WhatsApp y Token)
   const [subUsuarios, setSubUsuarios] = useState([]);
@@ -22,10 +22,18 @@ export default function ResidenteView() {
   const [mensajesChat, setMensajesChat] = useState([]);
   const [nuevoMensaje, setNuevoMensaje] = useState('');
 
-  // Videollamada activa (WebRTC simulado / Local Stream con la cámara del celu)
+  // Videollamada activa y WebRTC
   const [enVideollamada, setEnVideollamada] = useState(false);
-  const localVideoRef = useRef(null);
+  const localVideoRef = useRef(null);   // Tu propia cámara
+  const remoteVideoRef = useRef(null);  // La cámara del visitante
   const mediaStreamRef = useRef(null);
+  const peerConnectionRef = useRef(null);
+
+  const servers = {
+    iceServers: [
+      { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
+    ]
+  };
 
   // Historial y Filtro
   const [historial, setHistorial] = useState([]);
@@ -39,6 +47,11 @@ export default function ResidenteView() {
   ];
 
   useEffect(() => {
+    // Verificar si el navegador ya tiene permisos push otorgados previamente
+    if ('Notification' in window && Notification.permission === 'granted') {
+      setPushHabilitado(true);
+    }
+
     const params = new URLSearchParams(window.location.search);
     let ufUrl = params.get('uf');
     let tokenUrl = params.get('token');
@@ -74,9 +87,9 @@ export default function ResidenteView() {
         const datosLlamada = { id: docLlamada.id, ...docLlamada.data() };
         setLlamadaEntrante(datosLlamada);
 
-        // Si la llamada entrante es de video, activamos automáticamente la videollamada
+        // Si la llamada es de video, iniciamos WebRTC respondiendo la oferta
         if (datosLlamada.tipo === 'video') {
-          iniciarCamaraSeguridad();
+          iniciarCamaraSeguridad(datosLlamada.id);
         }
         
         if (Notification.permission === 'granted') {
@@ -145,8 +158,8 @@ export default function ResidenteView() {
     }
   };
 
-  // Funciones de Cámara / Videollamada real
-  const iniciarCamaraSeguridad = async () => {
+  // Funciones de Cámara y WebRTC para el Residente
+  const iniciarCamaraSeguridad = async (callId = null) => {
     setEnVideollamada(true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -154,9 +167,65 @@ export default function ResidenteView() {
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
+
+      if (callId) {
+        conectarWebRTCResidente(callId, stream);
+      }
     } catch (err) {
       console.error("Error al acceder a la cámara/micrófono:", err);
       alert("No se pudo acceder a la cámara. Asegurate de dar permisos en tu navegador.");
+    }
+  };
+
+  const conectarWebRTCResidente = async (callId, localStream) => {
+    try {
+      const pc = new RTCPeerConnection(servers);
+      peerConnectionRef.current = pc;
+
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      pc.ontrack = (event) => {
+        if (remoteVideoRef.current && event.streams[0]) {
+          remoteVideoRef.current.srcObject = event.streams[0];
+        }
+      };
+
+      const candidateCollection = collection(db, 'llamadas', callId, 'residentCandidates');
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          addDoc(candidateCollection, event.candidate.toJSON());
+        }
+      };
+
+      // Obtener la Offer del visitante desde Firestore
+      const callDocRef = doc(db, 'llamadas', callId);
+      const callSnap = await getDoc(callDocRef);
+      if (callSnap.exists()) {
+        const data = callSnap.data();
+        if (data.offer) {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+
+          await updateDoc(callDocRef, {
+            answer: { type: answer.type, sdp: answer.sdp }
+          });
+        }
+      }
+
+      // Escuchar candidatos ICE del visitante
+      const visitorCandidatesCol = collection(db, 'llamadas', callId, 'visitorCandidates');
+      onSnapshot(visitorCandidatesCol, (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            const candidate = new RTCIceCandidate(change.doc.data());
+            pc.addIceCandidate(candidate).catch(e => console.error(e));
+          }
+        });
+      });
+
+    } catch (err) {
+      console.error("Error WebRTC Residente:", err);
     }
   };
 
@@ -165,10 +234,14 @@ export default function ResidenteView() {
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
       mediaStreamRef.current = null;
     }
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
     setEnVideollamada(false);
   };
 
- const handleTogglePush = async () => {
+  const handleTogglePush = async () => {
     if (!pushHabilitado) {
       try {
         if (!('Notification' in window)) {
@@ -183,7 +256,6 @@ export default function ResidenteView() {
           if (vapidKey && ufData) {
             const currentToken = await getToken(messaging, { vapidKey });
             if (currentToken) {
-              // 🔑 GUARDAMOS EL TOKEN EN FIRESTORE EN LA UNIDAD CORRESPONDIENTE
               await updateDoc(doc(db, 'unidades', ufData.id), {
                 fcmToken: currentToken
               });
@@ -347,10 +419,21 @@ export default function ResidenteView() {
               </form>
             </div>
           ) : (
-            <div style={{ background: '#000', borderRadius: '6px', overflow: 'hidden', marginBottom: '10px', position: 'relative' }}>
-              <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '200px', objectFit: 'cover' }} />
-              <div style={{ position: 'absolute', bottom: '10px', left: '10px', background: 'rgba(0,0,0,0.6)', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>
-                🔴 Videollamada Activa
+            <div>
+              {/* Video del visitante que entra */}
+              <div style={{ background: '#000', borderRadius: '6px', overflow: 'hidden', marginBottom: '10px', position: 'relative', height: '180px' }}>
+                <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <div style={{ position: 'absolute', bottom: '8px', left: '8px', background: 'rgba(0,0,0,0.6)', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>
+                  👤 Visitante en puerta
+                </div>
+              </div>
+
+              {/* Tu propia cámara como miniatura */}
+              <div style={{ background: '#222', borderRadius: '6px', overflow: 'hidden', position: 'relative', height: '90px', width: '120px', margin: '0 auto 10px auto' }}>
+                <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <div style={{ position: 'absolute', bottom: '4px', left: '4px', background: 'rgba(0,0,0,0.6)', color: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '9px' }}>
+                  Tu cámara
+                </div>
               </div>
             </div>
           )}
@@ -395,7 +478,7 @@ export default function ResidenteView() {
         
         {!enVideollamada ? (
           <button 
-            onClick={iniciarCamaraSeguridad} 
+            onClick={() => iniciarCamaraSeguridad()} 
             style={{ background: '#17a2b8', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '5px', fontWeight: 'bold', fontSize: '15px', cursor: 'pointer' }}
           >
             📹 Abrir Videollamada de Seguridad
@@ -413,7 +496,19 @@ export default function ResidenteView() {
         )}
       </div>
 
-      {/* 2. GESTIÓN DE COHABITANTES CON WHATSAPP */}
+      {/* 2. MENSAJES PREDETERMINADOS */}
+      <div style={{ background: '#e2f0d9', padding: '15px', borderRadius: '8px', marginBottom: '15px' }}>
+        <h3 style={{ margin: '0 0 5px 0' }}>💬 Mensajes Predeterminados</h3>
+        <p style={{ fontSize: '13px', color: '#555' }}>Respuestas rápidas para enviar al visitante:</p>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+          {mensajesPredeterminados.map((msg, index) => (
+            <button key={index} onClick={() => enviarMensajeRapido(msg)} style={{ padding: '8px', background: '#17a2b8', border: '1px solid #28a745', borderRadius: '4px', cursor: 'pointer', textAlign: 'left', fontSize: '12px' }}>
+              💬 {msg}
+            </button>
+          ))}
+        </div>
+      </div>
+      {/* 3. GESTIÓN DE COHABITANTES CON WHATSAPP */}
       <div style={{ background: '#f8f9fa', padding: '15px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #ddd' }}>
         <h3>👥 Cohabitantes de la UF ({subUsuarios.length}/4)</h3>
         
@@ -439,18 +534,6 @@ export default function ResidenteView() {
         </ul>
       </div>
 
-      {/* 3. MENSAJES PREDETERMINADOS */}
-      <div style={{ background: '#e2f0d9', padding: '15px', borderRadius: '8px', marginBottom: '15px' }}>
-        <h3 style={{ margin: '0 0 5px 0' }}>💬 Mensajes Predeterminados</h3>
-        <p style={{ fontSize: '13px', color: '#555' }}>Respuestas rápidas para enviar al visitante:</p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-          {mensajesPredeterminados.map((msg, index) => (
-            <button key={index} onClick={() => enviarMensajeRapido(msg)} style={{ padding: '8px', background: '#17a2b8', border: '1px solid #28a745', borderRadius: '4px', cursor: 'pointer', textAlign: 'left', fontSize: '12px' }}>
-              💬 {msg}
-            </button>
-          ))}
-        </div>
-      </div>
 
       {/* 4. HISTORIAL Y FILTRO POR FECHA */}
       <div style={{ background: '#fff3cd', padding: '15px', borderRadius: '8px', border: '1px solid #ffeeba' }}>
