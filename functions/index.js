@@ -7,7 +7,7 @@ exports.notificarTimbre = onDocumentCreated("llamadas/{llamadoId}", async (event
   if (!snap) return;
 
   const llamada = snap.data();
-  const ufBuscada = llamada.uf;
+  const ufBuscada = String(llamada.uf); // 🔑 Forzamos a texto para asegurar coincidencia
   const edificioId = llamada.edificioId;
 
   try {
@@ -43,7 +43,6 @@ exports.notificarTimbre = onDocumentCreated("llamadas/{llamadoId}", async (event
 
       subSnapshot.forEach((doc) => {
         const sub = doc.data();
-        // Los cohabitantes reciben siempre la alerta en su celular vinculado
         if (sub.fcmToken) {
           tokens.push(sub.fcmToken);
         }
@@ -55,7 +54,7 @@ exports.notificarTimbre = onDocumentCreated("llamadas/{llamadoId}", async (event
       return null;
     }
 
-    // 3. Enviar la notificación push a todos los tokens recolectados (Titular + Cohabitantes)
+    // 3. Enviar la notificación push multicast a todos los tokens recolectados
     const mensaje = {
       data: {
         title: "🔔 ¡Están tocando el timbre!",
