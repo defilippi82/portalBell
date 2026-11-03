@@ -58,7 +58,6 @@ export default function VisitanteView() {
   useEffect(() => {
     if (!llamadaId) return;
 
-    // Escuchar si el residente finaliza/corta la llamada o si cambia el tipo a video
     const unsubscribeCall = onSnapshot(doc(db, 'llamadas', llamadaId), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -68,15 +67,14 @@ export default function VisitanteView() {
           cerrarVideollamada();
         }
 
-        // 🔑 Si el residente solicitó elevar el chat a videollamada desde su panel
-        if (data.tipo === 'video' && modoLlamada === 'chat') {
+        // 🔑 CORRECCIÓN CLAVE: Si estaba en chat y el residente solicita video, pasamos a modo video y lanzamos WebRTC
+        if (data.tipo === 'video' && modoLlamada !== 'video') {
           setModoLlamada('video');
           iniciarWebRTCVisitante(llamadaId);
         }
       }
     });
 
-    // Escuchar los mensajes del chat en tiempo real
     const q = query(collection(db, 'llamadas', llamadaId, 'mensajes'), orderBy('fecha', 'asc'));
     const unsubscribeMsgs = onSnapshot(q, (snapshot) => {
       const msgs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -174,7 +172,6 @@ export default function VisitanteView() {
 
     setModoLlamada(tipo);
     try {
-      // 1. Crear el registro de la llamada activa (esto sí va siempre porque es un evento nuevo de timbre)
       const llamadaRef = await addDoc(collection(db, 'llamadas'), {
         edificioId,
         uf: String(ufSeleccionada.uf),
@@ -185,8 +182,7 @@ export default function VisitanteView() {
       });
       setLlamadaId(llamadaRef.id);
 
-      // 2. LÓGICA DE VISITANTES FRECUENTES ÚNICOS POR UNIDAD
-      // Buscamos si ya existe un documento registrado para este dispositivo en esta unidad exacta
+      // Gestión de visitantes frecuentes (único por unidad)
       const qFrecuentes = query(
         collection(db, 'visitantes_frecuentes'),
         where('unidadId', '==', ufSeleccionada.id),
@@ -195,18 +191,16 @@ export default function VisitanteView() {
       const snapshotFrecuentes = await getDocs(qFrecuentes);
 
       if (!snapshotFrecuentes.empty) {
-        // Si YA EXISTE, solo actualizamos la fecha de la última visita
         const docExistenteId = snapshotFrecuentes.docs[0].id;
         await updateDoc(doc(db, 'visitantes_frecuentes', docExistenteId), {
           ultimaVisita: new Date().toISOString()
         });
       } else {
-        // Si NO EXISTE, creamos el documento por primera vez
         await addDoc(collection(db, 'visitantes_frecuentes'), {
           edificioId,
           unidadId: ufSeleccionada.id,
           visitorId: visitorId,
-          alias: '', // Comienza sin alias para que el residente lo edite si quiere
+          alias: '',
           ultimaVisita: new Date().toISOString()
         });
       }
