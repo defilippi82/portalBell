@@ -34,7 +34,14 @@ export default function VisitanteView() {
     ]
   };
 
+  // 1. Cargar datos iniciales y generar el visitorId único del dispositivo
   useEffect(() => {
+    let visitorId = localStorage.getItem('portal_visitor_id');
+    if (!visitorId) {
+      visitorId = 'visitor_' + Math.random().toString(36).substring(2) + '_' + Date.now();
+      localStorage.setItem('portal_visitor_id', visitorId);
+    }
+
     const params = new URLSearchParams(window.location.search);
     const idEdificioUrl = params.get('edificio');
 
@@ -47,20 +54,11 @@ export default function VisitanteView() {
     }
   }, []);
 
-  // Escuchar el estado de la llamada y los mensajes en tiempo real
+  // 2. Escuchar el estado de la llamada y los mensajes en tiempo real
   useEffect(() => {
     if (!llamadaId) return;
 
-    // Generar id del visitante para el chat
-    useEffect(() => {
-    let visitorId = localStorage.getItem('portal_visitor_id');
-    if (!visitorId) {
-      visitorId = 'visitor_' + Math.random().toString(36).substring(2) + '_' + Date.now();
-      localStorage.setItem('portal_visitor_id', visitorId);
-    }
-  }, []);
-
-    // 1. Escuchar si el residente finaliza/corta la llamada
+    // Escuchar si el residente finaliza/corta la llamada
     const unsubscribeCall = onSnapshot(doc(db, 'llamadas', llamadaId), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -71,7 +69,7 @@ export default function VisitanteView() {
       }
     });
 
-    // 2. Escuchar los mensajes del chat en tiempo real
+    // Escuchar los mensajes del chat en tiempo real
     const q = query(collection(db, 'llamadas', llamadaId, 'mensajes'), orderBy('fecha', 'asc'));
     const unsubscribeMsgs = onSnapshot(q, (snapshot) => {
       const msgs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -165,12 +163,15 @@ export default function VisitanteView() {
   };
 
   const iniciarLlamadaOchat = async (tipo) => {
+    const visitorId = localStorage.getItem('portal_visitor_id') || 'visitor_anonimo';
+
     setModoLlamada(tipo);
     try {
       const llamadaRef = await addDoc(collection(db, 'llamadas'), {
         edificioId,
-        uf: ufSeleccionada.uf,
+        uf: String(ufSeleccionada.uf),
         tipo: tipo,
+        visitorId: visitorId,
         estado: 'activo',
         fecha: new Date().toISOString()
       });
@@ -179,7 +180,7 @@ export default function VisitanteView() {
       // Guardamos en la base de frecuentes para reconocer este dispositivo en el futuro
       await addDoc(collection(db, 'visitantes_frecuentes'), {
         edificioId,
-        ufFrecuente: ufSeleccionada.uf,
+        unidadId: ufSeleccionada.id,
         visitorId: visitorId,
         ultimaVisita: new Date().toISOString()
       });
