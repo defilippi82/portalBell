@@ -174,6 +174,7 @@ export default function VisitanteView() {
 
     setModoLlamada(tipo);
     try {
+      // 1. Crear el registro de la llamada activa (esto sí va siempre porque es un evento nuevo de timbre)
       const llamadaRef = await addDoc(collection(db, 'llamadas'), {
         edificioId,
         uf: String(ufSeleccionada.uf),
@@ -184,13 +185,31 @@ export default function VisitanteView() {
       });
       setLlamadaId(llamadaRef.id);
 
-      // Guardamos en la base de frecuentes para reconocer este dispositivo en el futuro
-      await addDoc(collection(db, 'visitantes_frecuentes'), {
-        edificioId,
-        unidadId: ufSeleccionada.id,
-        visitorId: visitorId,
-        ultimaVisita: new Date().toISOString()
-      });
+      // 2. LÓGICA DE VISITANTES FRECUENTES ÚNICOS POR UNIDAD
+      // Buscamos si ya existe un documento registrado para este dispositivo en esta unidad exacta
+      const qFrecuentes = query(
+        collection(db, 'visitantes_frecuentes'),
+        where('unidadId', '==', ufSeleccionada.id),
+        where('visitorId', '==', visitorId)
+      );
+      const snapshotFrecuentes = await getDocs(qFrecuentes);
+
+      if (!snapshotFrecuentes.empty) {
+        // Si YA EXISTE, solo actualizamos la fecha de la última visita
+        const docExistenteId = snapshotFrecuentes.docs[0].id;
+        await updateDoc(doc(db, 'visitantes_frecuentes', docExistenteId), {
+          ultimaVisita: new Date().toISOString()
+        });
+      } else {
+        // Si NO EXISTE, creamos el documento por primera vez
+        await addDoc(collection(db, 'visitantes_frecuentes'), {
+          edificioId,
+          unidadId: ufSeleccionada.id,
+          visitorId: visitorId,
+          alias: '', // Comienza sin alias para que el residente lo edite si quiere
+          ultimaVisita: new Date().toISOString()
+        });
+      }
 
       if (tipo === 'video') {
         iniciarWebRTCVisitante(llamadaRef.id);
