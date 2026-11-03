@@ -58,13 +58,20 @@ export default function VisitanteView() {
   useEffect(() => {
     if (!llamadaId) return;
 
-    // Escuchar si el residente finaliza/corta la llamada
+    // Escuchar si el residente finaliza/corta la llamada o si cambia el tipo a video
     const unsubscribeCall = onSnapshot(doc(db, 'llamadas', llamadaId), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
+        
         if (data.estado === 'finalizado') {
           alert("La llamada fue finalizada por el residente.");
           cerrarVideollamada();
+        }
+
+        // 🔑 Si el residente solicitó elevar el chat a videollamada desde su panel
+        if (data.tipo === 'video' && modoLlamada === 'chat') {
+          setModoLlamada('video');
+          iniciarWebRTCVisitante(llamadaId);
         }
       }
     });
@@ -80,7 +87,7 @@ export default function VisitanteView() {
       unsubscribeCall();
       unsubscribeMsgs();
     };
-  }, [llamadaId]);
+  }, [llamadaId, modoLlamada]);
 
   const cargarDatosEdificioYUnidades = async (idEd) => {
     try {
@@ -128,7 +135,7 @@ export default function VisitanteView() {
       (position) => {
         const lat = position.coords.latitude;
         const lng = position.coords.longitude;
-        const radioPermitidoMetros = 150000; // 150000 metros prueba desde la oficina
+        const radioPermitidoMetros = 150000; // 150km de prueba
 
         const distancia = calcularDistanciaMetros(lat, lng, edificioLat, edificioLng);
         setDistanciaActualMetros(Math.round(distancia));
@@ -351,7 +358,7 @@ export default function VisitanteView() {
       ) : (
         <div style={{ background: '#f8f9fa', padding: '20px', borderRadius: '8px', border: '1px solid #ddd', textAlign: 'center' }}>
           <h3>UF Seleccionada: {ufSeleccionada.uf}</h3>
-          <p>Destinatario: {ufSeleccionada.piso} {ufSeleccionada.departamento ? `${ufSeleccionada.departamento.charAt(0)}.` : ''}</p>
+          <p>Destinatario: Piso {ufSeleccionada.piso}, Depto {ufSeleccionada.departamento}</p>
 
           {!modoLlamada ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '20px' }}>

@@ -106,7 +106,7 @@ export default function ResidenteView() {
         const datosLlamada = { id: docLlamada.id, ...docLlamada.data() };
         setLlamadaEntrante(datosLlamada);
 
-        // Si la llamada entrante es de video, iniciamos WebRTC respondiendo la oferta automáticamente
+        // Si la llamada entrante es de video y no estamos conectados, iniciamos WebRTC
         if (datosLlamada.tipo === 'video' && !enVideollamada) {
           iniciarVideollamadaEntrante(datosLlamada.id);
         }
@@ -211,6 +211,17 @@ export default function ResidenteView() {
     }
   };
 
+  const eliminarVisitanteFrecuente = async (id) => {
+    if (window.confirm("¿Estás seguro de eliminar este registro de visitante?")) {
+      try {
+        await deleteDoc(doc(db, 'visitantes_frecuentes', id));
+        cargarVisitantesFrecuentes(ufData.id);
+      } catch (error) {
+        console.error("Error al eliminar visitante:", error);
+      }
+    }
+  };
+
   const cargarHistorial = async (ufNombre) => {
     try {
       const q = query(collection(db, 'historial'), where('uf', '==', ufNombre));
@@ -221,7 +232,26 @@ export default function ResidenteView() {
     }
   };
 
-  // Función específica para la Videollamada Entrante (Timbre)
+  // Función para que el residente solicite/inicie una videollamada de seguridad hacia el visitante
+  const solicitarVideollamadaSeguridad = async () => {
+    if (!llamadaEntrante) {
+      alert("No hay ninguna llamada o chat activo con un visitante en este momento para elevar a videollamada.");
+      return;
+    }
+
+    try {
+      // Actualizamos la llamada existente a tipo 'video' para que el visitante abra su cámara
+      const llamadaRef = doc(db, 'llamadas', llamadaEntrante.id);
+      await updateDoc(llamadaRef, { tipo: 'video' });
+      
+      setLlamadaEntrante(prev => ({ ...prev, tipo: 'video' }));
+      iniciarVideollamadaEntrante(llamadaEntrante.id);
+    } catch (error) {
+      console.error("Error al solicitar videollamada:", error);
+      alert("No se pudo iniciar la videollamada.");
+    }
+  };
+
   const iniciarVideollamadaEntrante = async (callId) => {
     setEnVideollamada(true);
     try {
@@ -234,21 +264,6 @@ export default function ResidenteView() {
     } catch (err) {
       console.error("Error al acceder a la cámara en llamada entrante:", err);
       alert("No se pudo acceder a la cámara. Verificá los permisos del navegador.");
-    }
-  };
-
-  // Función para abrir la cámara manualmente desde la sección de seguridad
-  const abrirCamaraSeguridadManual = async () => {
-    setEnVideollamada(true);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      mediaStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
-    } catch (err) {
-      console.error("Error al acceder a la cámara de seguridad:", err);
-      alert("No se pudo acceder a la cámara.");
     }
   };
 
@@ -478,29 +493,39 @@ export default function ResidenteView() {
           <p style={{ fontSize: '15px', marginBottom: '5px' }}>
             Visitante: <strong>{nombreVisitanteMostrado}</strong>
           </p>
-          <p style={{ fontSize: '14px', marginBottom: '15px' }}>Visita en puerta solicitando: <strong>{llamadaEntrante.tipo === 'video' ? 'Videollamada 📹' : 'Chat Rápido 💬'}</strong></p>
+          <p style={{ fontSize: '14px', marginBottom: '10px' }}>Visita en puerta solicitando: <strong>{llamadaEntrante.tipo === 'video' ? 'Videollamada 📹' : 'Chat Rápido 💬'}</strong></p>
 
           {llamadaEntrante.tipo === 'chat' ? (
-            <div style={{ textAlign: 'left', background: 'white', padding: '10px', borderRadius: '6px', marginBottom: '10px' }}>
-              <div style={{ height: '150px', overflowY: 'auto', border: '1px solid #eee', padding: '8px', marginBottom: '10px', background: '#fafafa', borderRadius: '4px' }}>
-                {mensajesChat.map((m, i) => (
-                  <div key={i} style={{ marginBottom: '8px', textAlign: m.remitente === 'residente' ? 'right' : 'left' }}>
-                    <span style={{ display: 'inline-block', background: m.remitente === 'residente' ? '#28a745' : '#e9ecef', color: m.remitente === 'residente' ? 'white' : 'black', padding: '6px 10px', borderRadius: '8px', fontSize: '13px' }}>
-                      {m.texto}
-                    </span>
-                  </div>
-                ))}
+            <div>
+              <div style={{ textAlign: 'left', background: 'white', padding: '10px', borderRadius: '6px', marginBottom: '10px' }}>
+                <div style={{ height: '150px', overflowY: 'auto', border: '1px solid #eee', padding: '8px', marginBottom: '10px', background: '#fafafa', borderRadius: '4px' }}>
+                  {mensajesChat.map((m, i) => (
+                    <div key={i} style={{ marginBottom: '8px', textAlign: m.remitente === 'residente' ? 'right' : 'left' }}>
+                      <span style={{ display: 'inline-block', background: m.remitente === 'residente' ? '#28a745' : '#e9ecef', color: m.remitente === 'residente' ? 'white' : 'black', padding: '6px 10px', borderRadius: '8px', fontSize: '13px' }}>
+                        {m.texto}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <form onSubmit={enviarMensajeChat} style={{ display: 'flex', gap: '5px' }}>
+                  <input 
+                    type="text" 
+                    placeholder="Escribile al visitante..." 
+                    value={nuevoMensaje} 
+                    onChange={e => setNuevoMensaje(e.target.value)}
+                    style={{ flex: 1, padding: '8px', borderRadius: '4px', border: '1px solid #ccc' }}
+                  />
+                  <button type="submit" style={{ background: '#28a745', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '4px', cursor: 'pointer' }}>Enviar</button>
+                </form>
               </div>
-              <form onSubmit={enviarMensajeChat} style={{ display: 'flex', gap: '5px' }}>
-                <input 
-                  type="text" 
-                  placeholder="Escribile al visitante..." 
-                  value={nuevoMensaje} 
-                  onChange={e => setNuevoMensaje(e.target.value)}
-                  style={{ flex: 1, padding: '8px', borderRadius: '4px', border: '1px solid #ccc' }}
-                />
-                <button type="submit" style={{ background: '#28a745', color: 'white', border: 'none', padding: '8px 12px', borderRadius: '4px', cursor: 'pointer' }}>Enviar</button>
-              </form>
+
+              {/* Botón para que el residente solicite/eleve el chat a videollamada */}
+              <button 
+                onClick={solicitarVideollamadaSeguridad} 
+                style={{ background: '#17a2b8', color: 'white', border: 'none', padding: '10px 15px', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer', width: '100%', marginBottom: '10px' }}
+              >
+                📹 Solicitar Videollamada al Visitante
+              </button>
             </div>
           ) : (
             <div>
@@ -555,33 +580,6 @@ export default function ResidenteView() {
         </label>
       </div>
 
-      {/* SEGURIDAD: BOTÓN DE VIDEOLLAMADA MANUAL (SOLO SI NO HAY LLAMADA ENTRANTE) */}
-      {!llamadaEntrante && (
-        <div style={{ background: '#d1ecf1', padding: '15px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #bee5eb', textAlign: 'center' }}>
-          <h3 style={{ margin: '0 0 10px 0', color: '#0c5460' }}>🛡️ Seguridad y Monitoreo</h3>
-          <p style={{ fontSize: '13px', color: '#0c5460', marginBottom: '12px' }}>Abrí tu cámara localmente cuando desees.</p>
-          
-          {!enVideollamada ? (
-            <button 
-              onClick={abrirCamaraSeguridadManual} 
-              style={{ background: '#17a2b8', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '5px', fontWeight: 'bold', fontSize: '15px', cursor: 'pointer' }}
-            >
-              📹 Abrir Cámara
-            </button>
-          ) : (
-            <div style={{ background: 'white', padding: '15px', borderRadius: '6px', border: '1px solid #17a2b8' }}>
-              <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '180px', objectFit: 'cover', borderRadius: '4px', marginBottom: '10px' }} />
-              <button 
-                onClick={detenerCamaraSeguridad} 
-                style={{ background: '#dc3545', color: 'white', border: 'none', padding: '8px 15px', borderRadius: '4px', cursor: 'pointer', width: '100%' }}
-              >
-                Cerrar Cámara
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
       {/* 2. MENSAJES PREDETERMINADOS */}
       <div style={{ background: '#e2f0d9', padding: '15px', borderRadius: '8px', marginBottom: '15px' }}>
         <h3 style={{ margin: '0 0 5px 0' }}>💬 Mensajes Predeterminados</h3>
@@ -621,40 +619,45 @@ export default function ResidenteView() {
         </ul>
       </div>
 
-      {/* 5. GESTIÓN DE DISPOSITIVOS / VISITANTES FRECUENTES */}
+      {/* 5. GESTIÓN DE DISPOSITIVOS / VISITANTES FRECUENTES (ESTILO BOX CON SCROLL Y BOTÓN BORRAR) */}
       <div style={{ background: '#f8f9fa', padding: '15px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #ddd' }}>
         <h3>🏷️ Dispositivos y Visitas Frecuentes</h3>
-        <p style={{ fontSize: '13px', color: '#666' }}>Asigná un alias a los celulares de confianza que hayan tocado el timbre:</p>
+        <p style={{ fontSize: '13px', color: '#666' }}>Asigná un alias o eliminá los dispositivos registrados:</p>
         
-        {visitantesFrecuentes.length > 0 ? (
-          <ul style={{ paddingLeft: '20px', margin: 0 }}>
-            {visitantesFrecuentes.map(vf => (
-              <li key={vf.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', background: 'white', padding: '8px', borderRadius: '4px' }}>
-                <div>
-                  <strong>{vf.alias || 'Sin alias'}</strong>
-                  <div style={{ fontSize: '11px', color: '#888' }}>ID: {vf.visitorId}</div>
-                </div>
-                
-                {visitorIdAEditar === vf.visitorId ? (
-                  <div style={{ display: 'flex', gap: '5px' }}>
-                    <input 
-                      type="text" 
-                      placeholder="Ej: Hijo, Delivery..." 
-                      value={nuevoAlias} 
-                      onChange={e => setNuevoAlias(e.target.value)}
-                      style={{ padding: '4px', fontSize: '12px' }}
-                    />
-                    <button onClick={() => guardarAliasVisitante(vf.visitorId, nuevoAlias)} style={{ background: '#28a745', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>💾</button>
+        <div style={{ maxHeight: '180px', overflowY: 'auto', background: 'white', padding: '8px', borderRadius: '4px', border: '1px solid #eee' }}>
+          {visitantesFrecuentes.length > 0 ? (
+            <ul style={{ paddingLeft: '0', listStyle: 'none', margin: 0 }}>
+              {visitantesFrecuentes.map(vf => (
+                <li key={vf.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', borderBottom: '1px solid #f1f1f1', paddingBottom: '6px' }}>
+                  <div style={{ overflow: 'hidden', marginRight: '10px' }}>
+                    <strong>{vf.alias || 'Sin alias'}</strong>
+                    <div style={{ fontSize: '11px', color: '#888' }}>ID: {vf.visitorId}</div>
                   </div>
-                ) : (
-                  <button onClick={() => { setVisitorIdAEditar(vf.visitorId); setNuevoAlias(vf.alias || ''); }} style={{ background: '#007bff', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>✏️ Editar</button>
-                )}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p style={{ fontSize: '13px', color: '#666', textAlign: 'center' }}>Aún no hay dispositivos registrados que hayan tocado el timbre.</p>
-        )}
+                  
+                  <div style={{ display: 'flex', gap: '5px', flexShrink: 0 }}>
+                    {visitorIdAEditar === vf.visitorId ? (
+                      <div style={{ display: 'flex', gap: '4px' }}>
+                        <input 
+                          type="text" 
+                          placeholder="Ej: Hijo..." 
+                          value={nuevoAlias} 
+                          onChange={e => setNuevoAlias(e.target.value)}
+                          style={{ padding: '4px', fontSize: '12px', width: '90px' }}
+                        />
+                        <button onClick={() => guardarAliasVisitante(vf.visitorId, nuevoAlias)} style={{ background: '#28a745', color: 'white', border: 'none', padding: '4px 6px', borderRadius: '4px', cursor: 'pointer' }}>💾</button>
+                      </div>
+                    ) : (
+                      <button onClick={() => { setVisitorIdAEditar(vf.visitorId); setNuevoAlias(vf.alias || ''); }} style={{ background: '#007bff', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>✏️ Editar</button>
+                    )}
+                    <button onClick={() => eliminarVisitanteFrecuente(vf.id)} title="Eliminar dispositivo" style={{ background: '#dc3545', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>🗑️</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p style={{ fontSize: '13px', color: '#666', textAlign: 'center', margin: '20px 0' }}>Aún no hay dispositivos registrados que hayan tocado el timbre.</p>
+          )}
+        </div>
       </div>
 
       {/* 4. HISTORIAL Y FILTRO POR FECHA */}
