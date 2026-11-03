@@ -51,6 +51,15 @@ export default function VisitanteView() {
   useEffect(() => {
     if (!llamadaId) return;
 
+    // Generar id del visitante para el chat
+    useEffect(() => {
+    let visitorId = localStorage.getItem('portal_visitor_id');
+    if (!visitorId) {
+      visitorId = 'visitor_' + Math.random().toString(36).substring(2) + '_' + Date.now();
+      localStorage.setItem('portal_visitor_id', visitorId);
+    }
+  }, []);
+
     // 1. Escuchar si el residente finaliza/corta la llamada
     const unsubscribeCall = onSnapshot(doc(db, 'llamadas', llamadaId), (docSnap) => {
       if (docSnap.exists()) {
@@ -166,6 +175,14 @@ export default function VisitanteView() {
         fecha: new Date().toISOString()
       });
       setLlamadaId(llamadaRef.id);
+
+      // Guardamos en la base de frecuentes para reconocer este dispositivo en el futuro
+      await addDoc(collection(db, 'visitantes_frecuentes'), {
+        edificioId,
+        ufFrecuente: ufSeleccionada.uf,
+        visitorId: visitorId,
+        ultimaVisita: new Date().toISOString()
+      });
 
       if (tipo === 'video') {
         iniciarWebRTCVisitante(llamadaRef.id);

@@ -29,10 +29,29 @@ export default function ResidenteView() {
   const mediaStreamRef = useRef(null);
   const peerConnectionRef = useRef(null);
 
+  // Base de datos de Visitantes y Alias
+  const [visitantesFrecuentes, setVisitantesFrecuentes] = useState([]);
+  const [nuevoAlias, setNuevoAlias] = useState('');
+  const [visitorIdAEditar, setVisitorIdAEditar] = useState('');
+
   const servers = {
     iceServers: [
       { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
     ]
+  };
+
+  // Cambiar estado de la casa en Firestore
+  const cambiarEstadoCasa = async (nuevoEstado) => {
+    setEstadoCasa(nuevoEstado);
+    if (ufData) {
+      try {
+        await updateDoc(doc(db, 'unidades', ufData.id), {
+          estadoCasa: nuevoEstado
+        });
+      } catch (error) {
+        console.error("Error al actualizar estado en casa:", error);
+      }
+    }
   };
 
   // Historial y Filtro
@@ -93,8 +112,10 @@ export default function ResidenteView() {
         }
         
         if (Notification.permission === 'granted') {
+          const visitanteConocido = visitantesFrecuentes.find(v => v.visitorId === datosLlamada.visitorId);
+          const nombreAviso = visitanteConocido?.alias || 'Visitante';
           new Notification("🔔 ¡Están tocando el timbre!", {
-            body: `Tenés una visita en la puerta esperando (${datosLlamada.tipo}).`
+            body: `${nombreAviso} está en la puerta (${datosLlamada.tipo}).`
           });
         }
       } else {
@@ -105,7 +126,7 @@ export default function ResidenteView() {
     });
 
     return () => unsubscribe();
-  }, [ufData]);
+  }, [ufData, visitantesFrecuentes]);
 
   // Escuchar mensajes del chat en tiempo real
   useEffect(() => {
@@ -129,6 +150,7 @@ export default function ResidenteView() {
         const docEncontrado = querySnapshot.docs[0];
         setUfData({ id: docEncontrado.id, ...docEncontrado.data() });
         cargarSubUsuarios(docEncontrado.id);
+        cargarVisitantesFrecuentes(docEncontrado.id);
         cargarHistorial(ufBuscada);
       }
     } catch (error) {
@@ -137,7 +159,7 @@ export default function ResidenteView() {
       setCargando(false);
     }
   };
-
+  
   const cargarSubUsuarios = async (unidadId) => {
     try {
       const q = query(collection(db, 'sub_usuarios'), where('unidadId', '==', unidadId));
@@ -145,6 +167,47 @@ export default function ResidenteView() {
       setSubUsuarios(querySnapshot.docs.map(d => ({ id: d.id, ...d.data() })));
     } catch (e) {
       console.error(e);
+    }
+  };
+  
+  const cargarVisitantesFrecuentes = async (unidadId) => {
+    try {
+      const q = query(collection(db, 'visitantes_frecuentes'), where('unidadId', '==', unidadId));
+      const querySnapshot = await getDocs(q);
+      const lista = querySnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setVisitantesFrecuentes(lista);
+    } catch (e) {
+      console.error("Error cargando visitantes frecuentes:", e);
+    }
+  };
+
+  const guardarAliasVisitante = async (visitorId, aliasText) => {
+    try {
+      const q = query(
+        collection(db, 'visitantes_frecuentes'), 
+        where('unidadId', '==', ufData.id),
+        where('visitorId', '==', visitorId)
+      );
+      const snapshot = await getDocs(q);
+
+      if (!snapshot.empty) {
+        const docId = snapshot.docs[0].id;
+        await updateDoc(doc(db, 'visitantes_frecuentes', docId), { alias: aliasText });
+      } else {
+        await addDoc(collection(db, 'visitantes_frecuentes'), {
+          unidadId: ufData.id,
+          edificioId: ufData.edificioId,
+          visitorId: visitorId,
+          alias: aliasText,
+          ultimaVisita: new Date().toISOString()
+        });
+      }
+      alert("Alias guardado correctamente.");
+      cargarVisitantesFrecuentes(ufData.id);
+      setVisitorIdAEditar('');
+      setNuevoAlias('');
+    } catch (error) {
+      console.error("Error guardando alias:", error);
     }
   };
 
@@ -177,7 +240,7 @@ export default function ResidenteView() {
     }
   };
 
- const conectarWebRTCResidente = async (callId, localStream) => {
+  const conectarWebRTCResidente = async (callId, localStream) => {
     try {
       const pc = new RTCPeerConnection(servers);
       peerConnectionRef.current = pc;
@@ -385,6 +448,10 @@ export default function ResidenteView() {
     return item.fecha?.startsWith(filtroFecha);
   });
 
+  // Determinar el alias o nombre del visitante actual
+  const visitanteConocido = visitantesFrecuentes.find(v => v.visitorId === llamadaEntrante?.visitorId);
+  const nombreVisitanteMostrado = visitanteConocido?.alias || (llamadaEntrante?.visitorId ? `Dispositivo (${llamadaEntrante.visitorId.substring(0, 8)}...)` : 'Visitante Anónimo');
+
   return (
     <div style={{ padding: '15px', maxWidth: '600px', margin: '0 auto', fontFamily: 'sans-serif' }}>
       <h2>Panel Residente - UF {ufData.uf}</h2>
@@ -396,6 +463,9 @@ export default function ResidenteView() {
       {llamadaEntrante && (
         <div style={{ background: '#d4edda', border: '2px solid #28a745', padding: '15px', borderRadius: '8px', marginBottom: '20px', textAlign: 'center' }}>
           <h3 style={{ color: '#155724', margin: '0 0 10px 0' }}>🔔 ¡Están tocando el timbre!</h3>
+          <p style={{ fontSize: '15px', marginBottom: '5px' }}>
+            Visitante: <strong>{nombreVisitanteMostrado}</strong>
+          </p>
           <p style={{ fontSize: '14px', marginBottom: '15px' }}>Visita en puerta solicitando: <strong>{llamadaEntrante.tipo === 'video' ? 'Videollamada 📹' : 'Chat Rápido 💬'}</strong></p>
 
           {llamadaEntrante.tipo === 'chat' ? (
@@ -454,13 +524,13 @@ export default function ResidenteView() {
         <h3>⚙️ Presencia y Alertas</h3>
         <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
           <button 
-            onClick={() => setEstadoCasa('en_casa')}
+            onClick={() => cambiarEstadoCasa('en_casa')}
             style={{ flex: 1, padding: '10px', background: estadoCasa === 'en_casa' ? '#28a745' : '#ccc', color: 'white', border: 'none', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer' }}
           >
             🏠 Estoy en Casa
           </button>
           <button 
-            onClick={() => setEstadoCasa('fuera_de_casa')}
+            onClick={() => cambiarEstadoCasa('fuera_de_casa')}
             style={{ flex: 1, padding: '10px', background: estadoCasa === 'fuera_de_casa' ? '#dc3545' : '#ccc', color: 'white', border: 'none', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer' }}
           >
             🚶‍♂️ Fuera de Casa
@@ -510,6 +580,7 @@ export default function ResidenteView() {
           ))}
         </div>
       </div>
+
       {/* 3. GESTIÓN DE COHABITANTES CON WHATSAPP */}
       <div style={{ background: '#f8f9fa', padding: '15px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #ddd' }}>
         <h3>👥 Cohabitantes de la UF ({subUsuarios.length}/4)</h3>
@@ -536,6 +607,41 @@ export default function ResidenteView() {
         </ul>
       </div>
 
+      {/* 5. GESTIÓN DE DISPOSITIVOS / VISITANTES FRECUENTES */}
+      <div style={{ background: '#f8f9fa', padding: '15px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #ddd' }}>
+        <h3>🏷️ Dispositivos y Visitas Frecuentes</h3>
+        <p style={{ fontSize: '13px', color: '#666' }}>Asigná un alias a los celulares de confianza que hayan tocado el timbre:</p>
+        
+        {visitantesFrecuentes.length > 0 ? (
+          <ul style={{ paddingLeft: '20px', margin: 0 }}>
+            {visitantesFrecuentes.map(vf => (
+              <li key={vf.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', background: 'white', padding: '8px', borderRadius: '4px' }}>
+                <div>
+                  <strong>{vf.alias || 'Sin alias'}</strong>
+                  <div style={{ fontSize: '11px', color: '#888' }}>ID: {vf.visitorId}</div>
+                </div>
+                
+                {visitorIdAEditar === vf.visitorId ? (
+                  <div style={{ display: 'flex', gap: '5px' }}>
+                    <input 
+                      type="text" 
+                      placeholder="Ej: Hijo, Delivery..." 
+                      value={nuevoAlias} 
+                      onChange={e => setNuevoAlias(e.target.value)}
+                      style={{ padding: '4px', fontSize: '12px' }}
+                    />
+                    <button onClick={() => guardarAliasVisitante(vf.visitorId, nuevoAlias)} style={{ background: '#28a745', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>💾</button>
+                  </div>
+                ) : (
+                  <button onClick={() => { setVisitorIdAEditar(vf.visitorId); setNuevoAlias(vf.alias || ''); }} style={{ background: '#007bff', color: 'white', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>✏️ Editar</button>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p style={{ fontSize: '13px', color: '#666', textAlign: 'center' }}>Aún no hay dispositivos registrados que hayan tocado el timbre.</p>
+        )}
+      </div>
 
       {/* 4. HISTORIAL Y FILTRO POR FECHA */}
       <div style={{ background: '#fff3cd', padding: '15px', borderRadius: '8px', border: '1px solid #ffeeba' }}>
