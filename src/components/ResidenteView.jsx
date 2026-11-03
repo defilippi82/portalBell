@@ -22,10 +22,11 @@ export default function ResidenteView() {
   const [mensajesChat, setMensajesChat] = useState([]);
   const [nuevoMensaje, setNuevoMensaje] = useState('');
 
-  // Videollamada activa y WebRTC
+  // Videollamada activa y WebRTC (Separadas para evitar conflictos visuales)
   const [enVideollamada, setEnVideollamada] = useState(false);
-  const localVideoRef = useRef(null);   // Tu propia cámara
-  const remoteVideoRef = useRef(null);  // La cámara del visitante
+  const localVideoRef = useRef(null);           // Tu propia cámara (para la sección manual de seguridad)
+  const callLocalVideoRef = useRef(null);       // Tu propia cámara (dentro de la llamada entrante)
+  const callRemoteVideoRef = useRef(null);      // La cámara del visitante (dentro de la llamada entrante)
   const mediaStreamRef = useRef(null);
   const peerConnectionRef = useRef(null);
 
@@ -66,7 +67,6 @@ export default function ResidenteView() {
   ];
 
   useEffect(() => {
-    // Verificar si el navegador ya tiene permisos push otorgados previamente
     if ('Notification' in window && Notification.permission === 'granted') {
       setPushHabilitado(true);
     }
@@ -106,9 +106,9 @@ export default function ResidenteView() {
         const datosLlamada = { id: docLlamada.id, ...docLlamada.data() };
         setLlamadaEntrante(datosLlamada);
 
-        // Si la llamada es de video, iniciamos WebRTC respondiendo la oferta
-        if (datosLlamada.tipo === 'video') {
-          iniciarCamaraSeguridad(datosLlamada.id);
+        // Si la llamada entrante es de video, iniciamos WebRTC respondiendo la oferta automáticamente
+        if (datosLlamada.tipo === 'video' && !enVideollamada) {
+          iniciarVideollamadaEntrante(datosLlamada.id);
         }
         
         if (Notification.permission === 'granted') {
@@ -126,7 +126,7 @@ export default function ResidenteView() {
     });
 
     return () => unsubscribe();
-  }, [ufData, visitantesFrecuentes]);
+  }, [ufData, visitantesFrecuentes, enVideollamada]);
 
   // Escuchar mensajes del chat en tiempo real
   useEffect(() => {
@@ -221,8 +221,24 @@ export default function ResidenteView() {
     }
   };
 
-  // Funciones de Cámara y WebRTC para el Residente
-  const iniciarCamaraSeguridad = async (callId = null) => {
+  // Función específica para la Videollamada Entrante (Timbre)
+  const iniciarVideollamadaEntrante = async (callId) => {
+    setEnVideollamada(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      mediaStreamRef.current = stream;
+      if (callLocalVideoRef.current) {
+        callLocalVideoRef.current.srcObject = stream;
+      }
+      conectarWebRTCResidente(callId, stream);
+    } catch (err) {
+      console.error("Error al acceder a la cámara en llamada entrante:", err);
+      alert("No se pudo acceder a la cámara. Verificá los permisos del navegador.");
+    }
+  };
+
+  // Función para abrir la cámara manualmente desde la sección de seguridad
+  const abrirCamaraSeguridadManual = async () => {
     setEnVideollamada(true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -230,13 +246,9 @@ export default function ResidenteView() {
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
-
-      if (callId) {
-        conectarWebRTCResidente(callId, stream);
-      }
     } catch (err) {
-      console.error("Error al acceder a la cámara/micrófono:", err);
-      alert("No se pudo acceder a la cámara. Asegurate de dar permisos en tu navegador.");
+      console.error("Error al acceder a la cámara de seguridad:", err);
+      alert("No se pudo acceder a la cámara.");
     }
   };
 
@@ -248,8 +260,8 @@ export default function ResidenteView() {
       localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
       pc.ontrack = (event) => {
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = event.streams[0] || new MediaStream([event.track]);
+        if (callRemoteVideoRef.current) {
+          callRemoteVideoRef.current.srcObject = event.streams[0] || new MediaStream([event.track]);
         }
       };
 
@@ -260,7 +272,7 @@ export default function ResidenteView() {
         }
       };
 
-      // Escuchar la Offer del visitante en tiempo real para evitar fallos de sincronización
+      // Escuchar la Offer del visitante en tiempo real
       const callDocRef = doc(db, 'llamadas', callId);
       const unsubscribeOffer = onSnapshot(callDocRef, async (callSnap) => {
         if (callSnap.exists()) {
@@ -492,9 +504,9 @@ export default function ResidenteView() {
             </div>
           ) : (
             <div>
-              {/* Video del visitante que entra */}
+              {/* Video del visitante (Remoto) */}
               <div style={{ background: '#000', borderRadius: '6px', overflow: 'hidden', marginBottom: '10px', position: 'relative', height: '180px' }}>
-                <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <video ref={callRemoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 <div style={{ position: 'absolute', bottom: '8px', left: '8px', background: 'rgba(0,0,0,0.6)', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>
                   👤 Visitante en puerta
                 </div>
@@ -502,7 +514,7 @@ export default function ResidenteView() {
 
               {/* Tu propia cámara como miniatura */}
               <div style={{ background: '#222', borderRadius: '6px', overflow: 'hidden', position: 'relative', height: '90px', width: '120px', margin: '0 auto 10px auto' }}>
-                <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <video ref={callLocalVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 <div style={{ position: 'absolute', bottom: '4px', left: '4px', background: 'rgba(0,0,0,0.6)', color: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '9px' }}>
                   Tu cámara
                 </div>
@@ -543,30 +555,32 @@ export default function ResidenteView() {
         </label>
       </div>
 
-      {/* SEGURIDAD: BOTÓN DE VIDEOLLAMADA MANUAL */}
-      <div style={{ background: '#d1ecf1', padding: '15px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #bee5eb', textAlign: 'center' }}>
-        <h3 style={{ margin: '0 0 10px 0', color: '#0c5460' }}>🛡️ Seguridad y Videollamada</h3>
-        <p style={{ fontSize: '13px', color: '#0c5460', marginBottom: '12px' }}>Verificá la cámara de la entrada cuando desees.</p>
-        
-        {!enVideollamada ? (
-          <button 
-            onClick={() => iniciarCamaraSeguridad()} 
-            style={{ background: '#17a2b8', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '5px', fontWeight: 'bold', fontSize: '15px', cursor: 'pointer' }}
-          >
-            📹 Abrir Videollamada de Seguridad
-          </button>
-        ) : (
-          <div style={{ background: 'white', padding: '15px', borderRadius: '6px', border: '1px solid #17a2b8' }}>
-            <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '180px', objectFit: 'cover', borderRadius: '4px', marginBottom: '10px' }} />
+      {/* SEGURIDAD: BOTÓN DE VIDEOLLAMADA MANUAL (SOLO SI NO HAY LLAMADA ENTRANTE) */}
+      {!llamadaEntrante && (
+        <div style={{ background: '#d1ecf1', padding: '15px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #bee5eb', textAlign: 'center' }}>
+          <h3 style={{ margin: '0 0 10px 0', color: '#0c5460' }}>🛡️ Seguridad y Monitoreo</h3>
+          <p style={{ fontSize: '13px', color: '#0c5460', marginBottom: '12px' }}>Abrí tu cámara localmente cuando desees.</p>
+          
+          {!enVideollamada ? (
             <button 
-              onClick={detenerCamaraSeguridad} 
-              style={{ background: '#dc3545', color: 'white', border: 'none', padding: '8px 15px', borderRadius: '4px', cursor: 'pointer', width: '100%' }}
+              onClick={abrirCamaraSeguridadManual} 
+              style={{ background: '#17a2b8', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '5px', fontWeight: 'bold', fontSize: '15px', cursor: 'pointer' }}
             >
-              Cerrar Cámara
+              📹 Abrir Cámara
             </button>
-          </div>
-        )}
-      </div>
+          ) : (
+            <div style={{ background: 'white', padding: '15px', borderRadius: '6px', border: '1px solid #17a2b8' }}>
+              <video ref={localVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '180px', objectFit: 'cover', borderRadius: '4px', marginBottom: '10px' }} />
+              <button 
+                onClick={detenerCamaraSeguridad} 
+                style={{ background: '#dc3545', color: 'white', border: 'none', padding: '8px 15px', borderRadius: '4px', cursor: 'pointer', width: '100%' }}
+              >
+                Cerrar Cámara
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 2. MENSAJES PREDETERMINADOS */}
       <div style={{ background: '#e2f0d9', padding: '15px', borderRadius: '8px', marginBottom: '15px' }}>
