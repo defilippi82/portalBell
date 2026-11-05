@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db } from '../firebaseConfig/firebase';
-import { collection, query, where, getDocs, addDoc, updateDoc, doc, deleteDoc, onSnapshot, orderBy, getDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, doc, deleteDoc, onSnapshot, orderBy, writeBatch } from 'firebase/firestore';
 import { getMessaging, getToken } from 'firebase/messaging';
 
 export default function ResidenteView() {
@@ -22,11 +22,11 @@ export default function ResidenteView() {
   const [mensajesChat, setMensajesChat] = useState([]);
   const [nuevoMensaje, setNuevoMensaje] = useState('');
 
-  // Videollamada activa y WebRTC (Separadas para evitar conflictos visuales)
+  // Videollamada activa y WebRTC
   const [enVideollamada, setEnVideollamada] = useState(false);
-  const localVideoRef = useRef(null);           // Tu propia cámara (para la sección manual de seguridad)
-  const callLocalVideoRef = useRef(null);       // Tu propia cámara (dentro de la llamada entrante)
-  const callRemoteVideoRef = useRef(null);      // La cámara del visitante (dentro de la llamada entrante)
+  const localVideoRef = useRef(null);           
+  const callLocalVideoRef = useRef(null);       
+  const callRemoteVideoRef = useRef(null);      
   const mediaStreamRef = useRef(null);
   const peerConnectionRef = useRef(null);
 
@@ -35,29 +35,15 @@ export default function ResidenteView() {
   const [nuevoAlias, setNuevoAlias] = useState('');
   const [visitorIdAEditar, setVisitorIdAEditar] = useState('');
 
+  // Historial y Filtro
+  const [historial, setHistorial] = useState([]);
+  const [filtroFecha, setFiltroFecha] = useState('');
+
   const servers = {
     iceServers: [
       { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
     ]
   };
-
-  // Cambiar estado de la casa en Firestore
-  const cambiarEstadoCasa = async (nuevoEstado) => {
-    setEstadoCasa(nuevoEstado);
-    if (ufData) {
-      try {
-        await updateDoc(doc(db, 'unidades', ufData.id), {
-          estadoCasa: nuevoEstado
-        });
-      } catch (error) {
-        console.error("Error al actualizar estado en casa:", error);
-      }
-    }
-  };
-
-  // Historial y Filtro
-  const [historial, setHistorial] = useState([]);
-  const [filtroFecha, setFiltroFecha] = useState('');
 
   const mensajesPredeterminados = [
     "Ya bajo",
@@ -96,7 +82,7 @@ export default function ResidenteView() {
     const q = query(
       collection(db, 'llamadas'),
       where('edificioId', '==', ufData.edificioId),
-      where('uf', '==', ufData.uf),
+      where('uf', '==', String(ufData.uf)),
       where('estado', '==', 'activo')
     );
 
@@ -106,7 +92,6 @@ export default function ResidenteView() {
         const datosLlamada = { id: docLlamada.id, ...docLlamada.data() };
         setLlamadaEntrante(datosLlamada);
 
-        // Si la llamada entrante es de video y no estamos conectados, iniciamos WebRTC
         if (datosLlamada.tipo === 'video' && !enVideollamada) {
           iniciarVideollamadaEntrante(datosLlamada.id);
         }
@@ -148,10 +133,11 @@ export default function ResidenteView() {
       
       if (!querySnapshot.empty) {
         const docEncontrado = querySnapshot.docs[0];
-        setUfData({ id: docEncontrado.id, ...docEncontrado.data() });
+        const datosUnidad = { id: docEncontrado.id, ...docEncontrado.data() };
+        setUfData(datosUnidad);
         cargarSubUsuarios(docEncontrado.id);
         cargarVisitantesFrecuentes(docEncontrado.id);
-        cargarHistorial(ufBuscada);
+        cargarHistorial(datosUnidad.edificioId, ufBuscada);
       }
     } catch (error) {
       console.error("Error buscando unidad:", error);
@@ -178,6 +164,61 @@ export default function ResidenteView() {
       setVisitantesFrecuentes(lista);
     } catch (e) {
       console.error("Error cargando visitantes frecuentes:", e);
+    }
+  };
+
+  // Cargar historial de manera precisa filtrando por edificioId y uf
+  const cargarHistorial = async (edificioId, ufNombre) => {
+    try {
+      const q = query(
+        collection(db, 'historial'), 
+        where('edificioId', '==', edificioId),
+        where('uf', '==', String(ufNombre))
+      );
+      const querySnapshot = await getDocs(q);
+      const lista = querySnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Ordenar por fecha descendente (más reciente primero)
+      lista.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+      setHistorial(lista);
+    } catch (e) {
+      console.error("Error cargando historial:", e);
+    }
+  };
+
+  // Función para limpiar todo el historial de la UF
+  const limpiarHistorial = async () => {
+    if (historial.length === 0) {
+      alert("No hay registros en el historial para borrar.");
+      return;
+    }
+
+    if (window.confirm("¿Estás seguro de que deseás borrar todo el historial de timbres? Esta acción no se puede deshacer.")) {
+      try {
+        const batch = writeBatch(db);
+        historial.forEach((item) => {
+          const docRef = doc(db, 'historial', item.id);
+          batch.delete(docRef);
+        });
+        await batch.commit();
+        setHistorial([]);
+        alert("Historial borrado correctamente.");
+      } catch (error) {
+        console.error("Error al limpiar el historial:", error);
+        alert("Hubo un error al limpiar el historial.");
+      }
+    }
+  };
+
+  const cambiarEstadoCasa = async (nuevoEstado) => {
+    setEstadoCasa(nuevoEstado);
+    if (ufData) {
+      try {
+        await updateDoc(doc(db, 'unidades', ufData.id), {
+          estadoCasa: nuevoEstado
+        });
+      } catch (error) {
+        console.error("Error al actualizar estado en casa:", error);
+      }
     }
   };
 
@@ -222,17 +263,6 @@ export default function ResidenteView() {
     }
   };
 
-  const cargarHistorial = async (ufNombre) => {
-    try {
-      const q = query(collection(db, 'historial'), where('uf', '==', ufNombre));
-      const querySnapshot = await getDocs(q);
-      setHistorial(querySnapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  // Función para que el residente solicite/inicie una videollamada de seguridad hacia el visitante
   const solicitarVideollamadaSeguridad = async () => {
     if (!llamadaEntrante) {
       alert("No hay ninguna llamada o chat activo con un visitante en este momento para elevar a videollamada.");
@@ -240,7 +270,6 @@ export default function ResidenteView() {
     }
 
     try {
-      // Actualizamos la llamada existente a tipo 'video' para que el visitante abra su cámara
       const llamadaRef = doc(db, 'llamadas', llamadaEntrante.id);
       await updateDoc(llamadaRef, { tipo: 'video' });
       
@@ -287,7 +316,6 @@ export default function ResidenteView() {
         }
       };
 
-      // Escuchar la Offer del visitante en tiempo real
       const callDocRef = doc(db, 'llamadas', callId);
       const unsubscribeOffer = onSnapshot(callDocRef, async (callSnap) => {
         if (callSnap.exists()) {
@@ -305,7 +333,6 @@ export default function ResidenteView() {
         }
       });
 
-      // Escuchar candidatos ICE del visitante
       const visitorCandidatesCol = collection(db, 'llamadas', callId, 'visitorCandidates');
       onSnapshot(visitorCandidatesCol, (snapshot) => {
         snapshot.docChanges().forEach((change) => {
@@ -377,7 +404,7 @@ export default function ResidenteView() {
       const tokenSub = btoa(`sub_${ufData.uf}_${Date.now()}`);
       await addDoc(collection(db, 'sub_usuarios'), {
         unidadId: ufData.id,
-        uf: ufData.uf,
+        uf: String(ufData.uf),
         nombre: nuevoSubNombre,
         rol: nuevoSubRol || 'Familiar',
         telefono: nuevoSubTelefono,
@@ -422,11 +449,11 @@ export default function ResidenteView() {
     try {
       await addDoc(collection(db, 'historial'), {
         edificioId: ufData.edificioId,
-        uf: ufData.uf,
+        uf: String(ufData.uf),
         fecha: new Date().toISOString(),
         resultado: `Respuesta rápida: ${msg}`
       });
-      cargarHistorial(ufData.uf);
+      cargarHistorial(ufData.edificioId, ufData.uf);
     } catch (e) {
       console.error(e);
     }
@@ -453,6 +480,16 @@ export default function ResidenteView() {
       try {
         const llamadaRef = doc(db, 'llamadas', llamadaEntrante.id);
         await updateDoc(llamadaRef, { estado: 'finalizado' });
+
+        // Registrar en el historial de forma automática al finalizar
+        await addDoc(collection(db, 'historial'), {
+          edificioId: ufData.edificioId,
+          uf: String(ufData.uf),
+          fecha: new Date().toISOString(),
+          resultado: `Llamada finalizada (${llamadaEntrante.tipo})`
+        });
+        cargarHistorial(ufData.edificioId, ufData.uf);
+
       } catch (error) {
         console.error("Error al finalizar llamada:", error);
       }
@@ -475,7 +512,6 @@ export default function ResidenteView() {
     return item.fecha?.startsWith(filtroFecha);
   });
 
-  // Determinar el alias o nombre del visitante actual
   const visitanteConocido = visitantesFrecuentes.find(v => v.visitorId === llamadaEntrante?.visitorId);
   const nombreVisitanteMostrado = visitanteConocido?.alias || (llamadaEntrante?.visitorId ? `Dispositivo (${llamadaEntrante.visitorId.substring(0, 8)}...)` : 'Visitante Anónimo');
 
@@ -519,7 +555,6 @@ export default function ResidenteView() {
                 </form>
               </div>
 
-              {/* Botón para que el residente solicite/eleve el chat a videollamada */}
               <button 
                 onClick={solicitarVideollamadaSeguridad} 
                 style={{ background: '#17a2b8', color: 'white', border: 'none', padding: '10px 15px', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer', width: '100%', marginBottom: '10px' }}
@@ -529,7 +564,6 @@ export default function ResidenteView() {
             </div>
           ) : (
             <div>
-              {/* Video del visitante (Remoto) */}
               <div style={{ background: '#000', borderRadius: '6px', overflow: 'hidden', marginBottom: '10px', position: 'relative', height: '180px' }}>
                 <video ref={callRemoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 <div style={{ position: 'absolute', bottom: '8px', left: '8px', background: 'rgba(0,0,0,0.6)', color: 'white', padding: '4px 8px', borderRadius: '4px', fontSize: '11px' }}>
@@ -537,7 +571,6 @@ export default function ResidenteView() {
                 </div>
               </div>
 
-              {/* Tu propia cámara como miniatura */}
               <div style={{ background: '#222', borderRadius: '6px', overflow: 'hidden', position: 'relative', height: '90px', width: '120px', margin: '0 auto 10px auto' }}>
                 <video ref={callLocalVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 <div style={{ position: 'absolute', bottom: '4px', left: '4px', background: 'rgba(0,0,0,0.6)', color: 'white', padding: '2px 6px', borderRadius: '4px', fontSize: '9px' }}>
@@ -619,7 +652,7 @@ export default function ResidenteView() {
         </ul>
       </div>
 
-      {/* 5. GESTIÓN DE DISPOSITIVOS / VISITANTES FRECUENTES (ESTILO BOX CON SCROLL Y BOTÓN BORRAR) */}
+      {/* 5. GESTIÓN DE DISPOSITIVOS / VISITANTES FRECUENTES */}
       <div style={{ background: '#f8f9fa', padding: '15px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #ddd' }}>
         <h3>🏷️ Dispositivos y Visitas Frecuentes</h3>
         <p style={{ fontSize: '13px', color: '#666' }}>Asigná un alias o eliminá los dispositivos registrados:</p>
@@ -660,11 +693,22 @@ export default function ResidenteView() {
         </div>
       </div>
 
-      {/* 4. HISTORIAL Y FILTRO POR FECHA */}
+      {/* 4. HISTORIAL Y FILTRO POR FECHA CON BOTÓN DE LIMPIEZA */}
       <div style={{ background: '#fff3cd', padding: '15px', borderRadius: '8px', border: '1px solid #ffeeba' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
           <h3 style={{ margin: 0 }}>📋 Historial de Timbre</h3>
-          <input type="date" value={filtroFecha} onChange={e => setFiltroFecha(e.target.value)} style={{ padding: '5px', borderRadius: '4px', border: '1px solid #ccc' }} />
+          <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
+            <input type="date" value={filtroFecha} onChange={e => setFiltroFecha(e.target.value)} style={{ padding: '5px', borderRadius: '4px', border: '1px solid #ccc' }} />
+            {historial.length > 0 && (
+              <button 
+                onClick={limpiarHistorial} 
+                title="Limpiar todo el historial"
+                style={{ background: '#dc3545', color: 'white', border: 'none', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
+              >
+                🗑️ Limpiar
+              </button>
+            )}
+          </div>
         </div>
 
         <div style={{ maxHeight: '150px', overflowY: 'auto', background: 'white', padding: '8px', borderRadius: '4px' }}>
