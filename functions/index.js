@@ -54,7 +54,7 @@ exports.notificarTimbre = onDocumentCreated("llamadas/{llamadoId}", async (event
       return null;
     }
 
-    // 3. Enviar la notificación push multicast a todos los tokens recolectados
+    // 3. Enviar la notificación push multicast con PRIORIDAD ALTA
     const mensaje = {
       data: {
         title: "🔔 ¡Están tocando el timbre!",
@@ -62,10 +62,19 @@ exports.notificarTimbre = onDocumentCreated("llamadas/{llamadoId}", async (event
         click_action: `https://portalbell.vercel.app/residente?uf=${ufBuscada}`
       },
       tokens: tokens,
+      // 🔑 Configuración de prioridad para evitar retrasos por ahorro de energía en los celulares
+      android: {
+        priority: "high"
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10" // Prioridad máxima en dispositivos Apple
+        }
+      }
     };
 
     const response = await admin.messaging().sendEachForMulticast(mensaje);
-    console.log("Notificaciones enviadas con éxito:", response.successCount);
+    console.log(`Notificaciones enviadas. Exitosas: ${response.successCount}, Fallidas: ${response.failureCount}`);
     return null;
 
   } catch (error) {
