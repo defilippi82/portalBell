@@ -38,37 +38,36 @@ export const obtenerMessaging = async () => {
 // Obtener token Push.
 export const solicitarPermisoNotificaciones = async () => {
   try {
-    if (!("Notification" in window)) {
-      throw new Error("El navegador no soporta notificaciones.");
+    if (!('Notification' in window)) {
+      throw new Error('El navegador no soporta notificaciones.');
     }
 
-    if (!("serviceWorker" in navigator)) {
-      throw new Error("El navegador no soporta Service Workers.");
+    if (!('serviceWorker' in navigator)) {
+      throw new Error('El navegador no soporta Service Workers.');
     }
 
     if (!import.meta.env.VITE_FIREBASE_VAPID_KEY) {
-      throw new Error("Falta configurar la clave VAPID.");
+      throw new Error('Falta configurar la clave VAPID.');
     }
 
     const messaging = await obtenerMessaging();
 
     if (!messaging) {
-      throw new Error("Firebase Messaging no está soportado.");
+      throw new Error('Firebase Messaging no está soportado.');
     }
 
     const permiso = await Notification.requestPermission();
 
-    if (permiso !== "granted") {
+    if (permiso !== 'granted') {
       return null;
     }
 
-    // Utilizar el Service Worker de Firebase.
-    // Esta ruta requiere que el SW esté correctamente registrado.
-    const registro = await navigator.serviceWorker.register(
-      "/firebase-messaging-sw.js"
-    );
+    // Esperar al Service Worker principal de Vite PWA.
+    const registro = await navigator.serviceWorker.ready;
 
-    await navigator.serviceWorker.ready;
+    if (!registro.active) {
+      throw new Error('El Service Worker todavía no está activo.');
+    }
 
     const token = await getToken(messaging, {
       vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY,
@@ -76,13 +75,13 @@ export const solicitarPermisoNotificaciones = async () => {
     });
 
     if (!token) {
-      throw new Error("No se pudo obtener el token FCM.");
+      throw new Error('No se pudo obtener el token FCM.');
     }
 
     return token;
 
   } catch (error) {
-    console.error("Error registrando notificaciones:", error);
+    console.error('Error registrando notificaciones:', error);
     throw error;
   }
 };

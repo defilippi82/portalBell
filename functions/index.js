@@ -1,6 +1,8 @@
 //chatgpt
 
+
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { logger } = require("firebase-functions");
 const admin = require("firebase-admin");
 
 admin.initializeApp();
@@ -8,224 +10,376 @@ admin.initializeApp();
 const db = admin.firestore();
 const messaging = admin.messaging();
 
-exports.notificarTimbre = onDocumentCreated(
+const COLECCION_PROCESADOS = "_pushProcesados";
+const TIEMPO_LEASE_MS = 2 * 60 * 1000;
+const MAX_TOKENS_POR_ENVIO = 500;
+
+// -----------------------------------------------------
+// PROCESAMIENTO DE UNA LLAMADA NUEVA
+// -----------------------------------------------------
+
+exports.enviarNotificacionLlamada = onDocumentCreated(
   {
     document: "llamadas/{llamadoId}",
-
-    // Mantener una instancia caliente.
+    region: "southamerica-east1",
+    retry: true,
     minInstances: 1,
-
-    // Reintentar ante errores transitorios.
-    retry: true
   },
   async (event) => {
-    const inicio = Date.now();
-    const snap = event.data;
-
-    if (!snap) return;
-
-    const llamada = snap.data();
     const llamadoId = event.params.llamadoId;
+    const llamada = event.data?.data();
 
-    const uf = String(llamada.uf ?? "");
-    const edificioId = llamada.edificioId;
-
-    if (!uf || !edificioId) {
-      console.error("Llamada incompleta:", llamadoId);
+    if (!llamada) {
+      logger.warn("La llamada no contiene información", { llamadoId });
       return;
     }
 
-    // Control de duplicados con una reserva temporal.
-    const procesoRef = db.collection("_pushProcesados").doc(event.id);
-    const ahora = Date.now();
-    let reservado = false;
+    const { edificioId, uf } = llamada;
 
-    await db.runTransaction(async (tx) => {
-      const proceso = await tx.get(procesoRef);
+    if (!edificioId || !uf) {
+      logger.warn("La llamada no tiene edificioId o UF", {
+        llamadoId,
+        edificioId,
+        uf,
+      });
+      return;
+    }
 
-      if (proceso.exists) {
-        const datos = proceso.data();
+    const eventoId = event.id;
+    const procesoRef = db.collection(COLECCION_PROCESADOS).doc(eventoId);
 
-        if (datos.estado === "enviado") return;
+    // -------------------------------------------------
+    // 1. CONTROL DE DUPLICADOS
+    // -------------------------------------------------
 
-        const vencimiento = datos.leaseHasta?.toMillis?.() || 0;
+    const puedeProcesar = await db.runTransaction(async (tx) => {
+      const procesoSnap = await tx.get(procesoRef);
+      const ahora = Date.now();
 
-        if (vencimiento > ahora) return;
+      if (procesoSnap.exists) {
+        const proceso = procesoSnap.data();
+
+        if (proceso.estado === "completado") {
+          return false;
+        }
+
+        const leaseHasta = proceso.leaseHasta?.toMillis?.() || 0;
+
+        if (
+          proceso.estado === "procesando" &&
+          leaseHasta > ahora
+        ) {
+          return false;
+        }
       }
 
-      tx.set(procesoRef, {
-        estado: "procesando",
-        llamadoId,
-        leaseHasta: admin.firestore.Timestamp.fromMillis(
-          ahora + 120000
-        ),
-        actualizado: admin.firestore.FieldValue.serverTimestamp()
-      });
+      tx.set(
+        procesoRef,
+        {
+          estado: "procesando",
+          llamadoId,
+          edificioId,
+          uf,
+          inicio: admin.firestore.FieldValue.serverTimestamp(),
+          leaseHasta: admin.firestore.Timestamp.fromMillis(
+            ahora + TIEMPO_LEASE_MS
+          ),
+        },
+        { merge: true }
+      );
 
-      reservado = true;
+      return true;
     });
 
-    if (!reservado) {
-      console.log("Evento ya procesado o en ejecución:", event.id);
+    if (!puedeProcesar) {
+      logger.info("Evento duplicado o ya procesándose", {
+        llamadoId,
+        eventoId,
+      });
       return;
     }
 
     try {
-      // 1. Buscar unidad.
-      const unidades = await db
+      // -----------------------------------------------
+      // 2. BUSCAR LA UNIDAD
+      // -----------------------------------------------
+
+      const unidadQuery = await db
         .collection("unidades")
         .where("edificioId", "==", edificioId)
         .where("uf", "==", uf)
-        .limit(2)
+        .limit(1)
         .get();
 
-      if (unidades.empty) {
-        console.log("No existe unidad:", uf);
-        await procesoRef.update({ estado: "enviado" });
+      if (unidadQuery.empty) {
+        logger.warn("No se encontró la unidad", {
+          llamadoId,
+          edificioId,
+          uf,
+        });
+
+        await marcarProcesoCompletado(procesoRef, "unidad_no_encontrada");
         return;
       }
 
-      if (unidades.size > 1) {
-        throw new Error(`UF duplicada: ${uf}, edificio: ${edificioId}`);
-      }
+      const unidadDoc = unidadQuery.docs[0];
+      const unidadId = unidadDoc.id;
 
-      const unidadDoc = unidades.docs[0];
-      const unidad = unidadDoc.data();
+      // -----------------------------------------------
+      // 3. BUSCAR LOS DISPOSITIVOS DE ESA UNIDAD
+      // -----------------------------------------------
 
-      const destinatarios = [];
-
-      // 2. Titular.
-      if (
-        unidad.fcmToken &&
-        unidad.estadoCasa !== "fuera_de_casa"
-      ) {
-        destinatarios.push({
-          token: unidad.fcmToken,
-          ref: unidadDoc.ref
-        });
-      }
-
-      // 3. Cohabitantes.
-      const subUsuarios = await db
-        .collection("sub_usuarios")
-        .where("unidadId", "==", unidadDoc.id)
+      const dispositivosSnap = await db
+        .collection("unidades")
+        .doc(unidadId)
+        .collection("dispositivos")
         .get();
 
-      subUsuarios.forEach((doc) => {
-        const sub = doc.data();
+      if (dispositivosSnap.empty) {
+        logger.info("La unidad no tiene dispositivos registrados", {
+          llamadoId,
+          unidadId,
+        });
 
-        if (sub.fcmToken) {
-          destinatarios.push({
-            token: sub.fcmToken,
-            ref: doc.ref
+        await marcarProcesoCompletado(procesoRef, "sin_dispositivos");
+        return;
+      }
+
+      // -----------------------------------------------
+      // 4. FILTRAR DISPOSITIVOS HABILITADOS
+      // -----------------------------------------------
+
+      const dispositivosHabilitados = dispositivosSnap.docs.filter(
+        (doc) => {
+          const dispositivo = doc.data();
+
+          return (
+            dispositivo.recibirPush === true &&
+            dispositivo.estado === "en_casa" &&
+            typeof dispositivo.fcmToken === "string" &&
+            dispositivo.fcmToken.trim().length > 0
+          );
+        }
+      );
+
+      if (dispositivosHabilitados.length === 0) {
+        logger.info("No hay dispositivos habilitados para recibir push", {
+          llamadoId,
+          unidadId,
+          totalDispositivos: dispositivosSnap.size,
+        });
+
+        await marcarProcesoCompletado(procesoRef, "sin_destinatarios");
+        return;
+      }
+
+      // -----------------------------------------------
+      // 5. AGRUPAR TOKENS SIN DUPLICAR
+      // -----------------------------------------------
+
+      // Un mismo token puede aparecer en más de un documento.
+      // Lo enviamos una sola vez y conservamos todas sus referencias
+      // para poder limpiar tokens inválidos.
+
+      const tokensMap = new Map();
+
+      for (const doc of dispositivosHabilitados) {
+        const dispositivo = doc.data();
+        const token = dispositivo.fcmToken.trim();
+
+        if (!tokensMap.has(token)) {
+          tokensMap.set(token, {
+            token,
+            documentos: [],
           });
         }
-      });
 
-      // 4. Eliminar duplicados.
-      const unicos = new Map();
-
-      destinatarios.forEach((d) => {
-        if (!unicos.has(d.token)) {
-          unicos.set(d.token, d);
-        }
-      });
-
-      const lista = [...unicos.values()];
-
-      if (!lista.length) {
-        console.log("Sin dispositivos:", uf);
-        await procesoRef.update({ estado: "enviado" });
-        return;
+        tokensMap.get(token).documentos.push(doc.ref);
       }
 
-      // 5. Configuración Web Push para PWA.
-      const mensaje = {
+      const destinatarios = Array.from(tokensMap.values());
+
+      logger.info("Destinatarios preparados", {
+        llamadoId,
+        unidadId,
+        dispositivosHabilitados: dispositivosHabilitados.length,
+        tokensUnicos: destinatarios.length,
+      });
+
+      // -----------------------------------------------
+      // 6. PREPARAR EL MENSAJE
+      // -----------------------------------------------
+
+      const nombreVisitante =
+        llamada.nombreVisitante ||
+        llamada.visitanteNombre ||
+        llamada.nombre ||
+        "";
+
+      const titulo = "PortalBell - Timbre inteligente";
+
+      const cuerpo = nombreVisitante
+        ? `${nombreVisitante} está llamando a tu puerta`
+        : "Un visitante está llamando a tu puerta";
+
+      const mensajeBase = {
         data: {
-          title: "🔔 ¡Están tocando el timbre!",
-          body: `Tenés una visita en la puerta (${llamada.tipo || "Visita"}).`,
-          click_action:
-            `https://portalbell.vercel.app/residente?uf=${encodeURIComponent(uf)}`,
+          title: titulo,
+          body: cuerpo,
+          click_action: "/",
           llamadoId: String(llamadoId),
           edificioId: String(edificioId),
-          enviadoEn: String(Date.now())
+          uf: String(uf),
         },
-
         webpush: {
           headers: {
             Urgency: "high",
-            TTL: "60"
-          }
-        }
+            TTL: "60",
+          },
+        },
       };
 
-      // 6. Enviar en grupos de hasta 500 tokens.
-      let exitosas = 0;
-      let fallidas = 0;
+      // -----------------------------------------------
+      // 7. ENVIAR EN LOTES DE HASTA 500 TOKENS
+      // -----------------------------------------------
 
-      for (let i = 0; i < lista.length; i += 500) {
-        const grupo = lista.slice(i, i + 500);
+      let enviados = 0;
+      let fallidos = 0;
+      let tokensInvalidos = 0;
 
-        const respuesta = await messaging.sendEachForMulticast({
-          ...mensaje,
-          tokens: grupo.map((d) => d.token)
+      for (
+        let inicio = 0;
+        inicio < destinatarios.length;
+        inicio += MAX_TOKENS_POR_ENVIO
+      ) {
+        const lote = destinatarios.slice(
+          inicio,
+          inicio + MAX_TOKENS_POR_ENVIO
+        );
+
+        const response = await messaging.sendEachForMulticast({
+          ...mensajeBase,
+          tokens: lote.map((item) => item.token),
         });
 
-        exitosas += respuesta.successCount;
-        fallidas += respuesta.failureCount;
+        enviados += response.successCount;
+        fallidos += response.failureCount;
 
-        // 7. Limpiar tokens inválidos.
-        const limpieza = [];
+        // ---------------------------------------------
+        // 8. LIMPIAR TOKENS INVÁLIDOS
+        // ---------------------------------------------
 
-        respuesta.responses.forEach((r, index) => {
-          const codigo = r.error?.code;
+        const limpiezas = [];
 
-          if (
-            !r.success &&
-            [
-              "messaging/registration-token-not-registered",
-              "messaging/invalid-registration-token"
-            ].includes(codigo)
-          ) {
-            limpieza.push(
-              grupo[index].ref.update({
-                fcmToken: admin.firestore.FieldValue.delete()
-              })
+        response.responses.forEach((resultado, index) => {
+          if (resultado.success) {
+            return;
+          }
+
+          const codigo = resultado.error?.code;
+          const esTokenInvalido =
+            codigo === "messaging/invalid-registration-token" ||
+            codigo === "messaging/registration-token-not-registered";
+
+          if (!esTokenInvalido) {
+            logger.warn("Error al enviar notificación", {
+              llamadoId,
+              codigo,
+              mensaje: resultado.error?.message,
+            });
+            return;
+          }
+
+          tokensInvalidos++;
+
+          const destinatario = lote[index];
+
+          for (const dispositivoRef of destinatario.documentos) {
+            limpiezas.push(
+              dispositivoRef.set(
+                {
+                  fcmToken: admin.firestore.FieldValue.delete(),
+                  recibirPush: false,
+                  actualizado:
+                    admin.firestore.FieldValue.serverTimestamp(),
+                },
+                { merge: true }
+              )
             );
           }
         });
 
-        await Promise.all(limpieza);
+        if (limpiezas.length > 0) {
+          await Promise.all(limpiezas);
+        }
       }
 
-      // 8. Registrar resultado.
-      await procesoRef.update({
-        estado: "enviado",
-        exitosas,
-        fallidas,
-        destinatarios: lista.length,
-        finalizado: admin.firestore.FieldValue.serverTimestamp()
-      });
+      // -----------------------------------------------
+      // 9. REGISTRAR RESULTADO
+      // -----------------------------------------------
 
-      console.log({
+      await procesoRef.set(
+        {
+          estado: "completado",
+          resultado: "finalizado",
+          dispositivosHabilitados: dispositivosHabilitados.length,
+          tokensUnicos: destinatarios.length,
+          enviados,
+          fallidos,
+          tokensInvalidos,
+          finalizado: admin.firestore.FieldValue.serverTimestamp(),
+          leaseHasta: admin.firestore.Timestamp.fromMillis(0),
+        },
+        { merge: true }
+      );
+
+      logger.info("Proceso de notificaciones finalizado", {
         llamadoId,
-        uf,
-        destinatarios: lista.length,
-        exitosas,
-        fallidas,
-        duracionMs: Date.now() - inicio
+        unidadId,
+        enviados,
+        fallidos,
+        tokensInvalidos,
+      });
+    } catch (error) {
+      logger.error("Error procesando notificación de llamada", {
+        llamadoId,
+        eventoId,
+        error: error.message,
+        stack: error.stack,
       });
 
-    } catch (error) {
-      console.error("Error notificando timbre:", error);
-
-      // Liberar la reserva para permitir el reintento.
-      await procesoRef.delete().catch(() => {});
+      // Liberamos el bloqueo para permitir un nuevo intento.
+      await procesoRef.set(
+        {
+          estado: "error",
+          error: error.message || "Error desconocido",
+          leaseHasta: admin.firestore.Timestamp.fromMillis(0),
+          ultimoError: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
 
       throw error;
     }
   }
 );
+
+// -----------------------------------------------------
+// FUNCIÓN AUXILIAR: MARCAR PROCESO COMPLETADO
+// -----------------------------------------------------
+
+async function marcarProcesoCompletado(procesoRef, resultado) {
+  await procesoRef.set(
+    {
+      estado: "completado",
+      resultado,
+      finalizado: admin.firestore.FieldValue.serverTimestamp(),
+      leaseHasta: admin.firestore.Timestamp.fromMillis(0),
+    },
+    { merge: true }
+  );
+}
+
 
 //gemini
 /*const { onDocumentCreated } = require("firebase-functions/v2/firestore");
