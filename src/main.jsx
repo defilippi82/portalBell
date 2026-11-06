@@ -4,7 +4,7 @@ import './index.css'
 import App from './App.jsx'
 
 // 🔑 REGISTRO OBLIGATORIO DEL SERVICE WORKER PARA PUSH NOTIFICATIONS
-if ('serviceWorker' in navigator) {
+/*if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/firebase-messaging-sw.js')
       .then((registration) => {
@@ -14,7 +14,7 @@ if ('serviceWorker' in navigator) {
         console.error('Fallo al registrar el Service Worker:', error);
       });
   });
-}
+}*/
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { db } from '../firebaseConfig/firebase';
+import { db, solicitarPermisoNotificaciones, escucharMensajesPush } from '../firebaseConfig/firebase';
 import { collection, query, where, getDocs, addDoc, updateDoc, doc, deleteDoc, onSnapshot, orderBy, writeBatch } from 'firebase/firestore';
 import { getMessaging, getToken } from 'firebase/messaging';
 
@@ -96,13 +96,13 @@ export default function ResidenteView() {
           iniciarVideollamadaEntrante(datosLlamada.id);
         }
         
-        if (Notification.permission === 'granted') {
+        /*if (Notification.permission === 'granted') {
           const visitanteConocido = visitantesFrecuentes.find(v => v.visitorId === datosLlamada.visitorId);
           const nombreAviso = visitanteConocido?.alias || 'Visitante';
           new Notification("🔔 ¡Están tocando el timbre!", {
             body: `${nombreAviso} está en la puerta (${datosLlamada.tipo}).`
           });
-        }
+        }*/
       } else {
         setLlamadaEntrante(null);
         setMensajesChat([]);
@@ -112,6 +112,44 @@ export default function ResidenteView() {
 
     return () => unsubscribe();
   }, [ufData, visitantesFrecuentes, enVideollamada]);
+
+  //useEffect de chatgpt
+  
+useEffect(() => {
+  let cancelar = () => {};
+
+  const iniciarEscuchaPush = async () => {
+    cancelar = await escucharMensajesPush((payload) => {
+      console.log("[PortalBell] Push en primer plano:", payload);
+
+      const data = payload.data || {};
+
+      const titulo =
+        data.title || "🔔 ¡Están tocando el timbre!";
+
+      const cuerpo =
+        data.body || "Tenés una visita en la puerta.";
+
+      navigator.serviceWorker.ready.then((registro) => {
+        return registro.showNotification(titulo, {
+          body: cuerpo,
+          icon: "/pwa-192x192.png",
+          badge: "/pwa-192x192.png",
+          tag: `portalbell-${data.llamadoId || Date.now()}`,
+          renotify: false,
+          data: {
+            url: data.click_action || "/residente"
+          }
+        });
+      }).catch(console.error);
+    });
+  };
+
+  iniciarEscuchaPush().catch(console.error);
+
+  return () => cancelar();
+}, []);
+
 
   // Escuchar mensajes del chat en tiempo real
   useEffect(() => {
@@ -360,7 +398,79 @@ export default function ResidenteView() {
     setEnVideollamada(false);
   };
 
-  const handleTogglePush = async () => {
+  
+const handleTogglePush = async () => {
+  if (pushHabilitado) {
+    // Desactivar visualmente no elimina el token del servidor.
+    setPushHabilitado(false);
+    return;
+  }
+
+  try {
+    if (!ufData) {
+      throw new Error("No se encontró la unidad funcional.");
+    }
+
+    const currentToken = await solicitarPermisoNotificaciones();
+
+    if (!currentToken) {
+      alert("No se pudo activar el servicio de notificaciones.");
+      return;
+    }
+
+    // Identificar si ingresó el titular o un cohabitante.
+    const tokenAcceso = localStorage.getItem("portal_token");
+
+    if (tokenAcceso) {
+      const q = query(
+        collection(db, "sub_usuarios"),
+        where("unidadId", "==", ufData.id),
+        where("token", "==", tokenAcceso)
+      );
+
+      const resultado = await getDocs(q);
+
+      if (resultado.empty) {
+        throw new Error(
+          "No se encontró el cohabitante asociado al acceso."
+        );
+      }
+
+      if (resultado.size > 1) {
+        throw new Error("El acceso del cohabitante no es único.");
+      }
+
+      await updateDoc(
+        doc(db, "sub_usuarios", resultado.docs[0].id),
+        {
+          fcmToken: currentToken,
+          pushActualizado: new Date().toISOString()
+        }
+      );
+
+      console.log("Push registrado para cohabitante.");
+
+    } else {
+      // El titular guarda su token en unidades.
+      await updateDoc(doc(db, "unidades", ufData.id), {
+        fcmToken: currentToken,
+        pushActualizado: new Date().toISOString()
+      });
+
+      console.log("Push registrado para titular.");
+    }
+
+    setPushHabilitado(true);
+
+    alert("¡PortalBell está listo para recibir avisos!");
+
+  } catch (error) {
+    console.error("Error activando notificaciones:", error);
+    alert("No se pudieron activar las notificaciones: " + error.message);
+  }
+};
+
+  /*const handleTogglePush = async () => {
     if (!pushHabilitado) {
       try {
         if (!('Notification' in window)) {
@@ -392,7 +502,7 @@ export default function ResidenteView() {
     } else {
       setPushHabilitado(false);
     }
-  };
+  };*/
 
   const agregarSubUsuario = async (e) => {
     e.preventDefault();
