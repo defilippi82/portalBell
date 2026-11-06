@@ -799,7 +799,7 @@ const iniciarVideollamadaEntrante = async (callId) => {
       'No se pudo iniciar la videollamada. Verificá los permisos de cámara y micrófono.'
     );
 
-    detenerCamaraSeguridad(iniciandoVideollamadaRef.current = false;);
+    detenerCamaraSeguridad(iniciandoVideollamadaRef.current = false);
   }
 };
 
