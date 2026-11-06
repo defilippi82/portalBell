@@ -22,8 +22,8 @@ exports.enviarNotificacionLlamada = onDocumentCreated(
   {
     document: "llamadas/{llamadoId}",
     region: "southamerica-east1",
-    retry: true,
-    minInstances: 1,
+    retry: true
+    
   },
   async (event) => {
     const llamadoId = event.params.llamadoId;
