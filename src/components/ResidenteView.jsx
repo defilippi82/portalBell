@@ -1631,8 +1631,8 @@ export default function ResidenteView() {
               onClick={() => enviarMensajeRapido(msg)}
               disabled={!llamadaEntrante}
               style={{
-                padding: '8px',
-                color: 'dark',
+                padding: '10px',
+                color: 'black',
                 background: '#17a2b8',
                 border: '1px solid #28a745',
                 borderRadius: '4px',
