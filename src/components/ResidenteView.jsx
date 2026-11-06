@@ -105,51 +105,57 @@ export default function ResidenteView() {
   // 3. IDENTIFICAR TITULAR O COHABITANTE
   // =====================================================
 
-  const obtenerContextoDispositivo = async (unidadId) => {
+ const obtenerContextoDispositivo = async (unidadId) => {
+  const deviceId = obtenerDeviceId();
+  const tokenAcceso = localStorage.getItem('portal_token');
 
-    const deviceId = obtenerDeviceId();
+  const unidadRef = doc(db, 'unidades', unidadId);
+  const unidadSnap = await getDoc(unidadRef);
 
-    const tokenAcceso = localStorage.getItem('portal_token');
+  if (!unidadSnap.exists()) {
+    throw new Error('No se encontró la unidad.');
+  }
 
-    let identidad = {
-      tipoUsuario: 'titular',
-      subUsuarioId: null
-    };
+  const datosUnidad = unidadSnap.data();
 
-    // Si existe token de acceso, identificar cohabitante.
-
-    if (tokenAcceso) {
-
-      const q = query(
-        collection(db, 'sub_usuarios'),
-        where('unidadId', '==', unidadId),
-        where('token', '==', tokenAcceso)
-      );
-
-      const resultado = await getDocs(q);
-
-      if (resultado.empty || resultado.size > 1) {
-        throw new Error('No se pudo identificar al cohabitante.');
+  // Primero comprobamos si el token corresponde al titular.
+  if (tokenAcceso && tokenAcceso === datosUnidad.token) {
+    return {
+      ref: doc(db, 'unidades', unidadId, 'dispositivos', deviceId),
+      deviceId,
+      identidad: {
+        tipoUsuario: 'titular',
+        subUsuarioId: null
       }
+    };
+  }
 
-      identidad = {
-        tipoUsuario: 'cohabitante',
-        subUsuarioId: resultado.docs[0].id
-      };
+  // Si no es el titular, buscamos al cohabitante.
+  if (tokenAcceso) {
+    const q = query(
+      collection(db, 'sub_usuarios'),
+      where('unidadId', '==', unidadId),
+      where('token', '==', tokenAcceso)
+    );
+
+    const resultado = await getDocs(q);
+
+    if (resultado.size !== 1) {
+      throw new Error('No se pudo identificar al usuario.');
     }
 
     return {
-      ref: doc(
-        db,
-        'unidades',
-        unidadId,
-        'dispositivos',
-        deviceId
-      ),
+      ref: doc(db, 'unidades', unidadId, 'dispositivos', deviceId),
       deviceId,
-      identidad
+      identidad: {
+        tipoUsuario: 'cohabitante',
+        subUsuarioId: resultado.docs[0].id
+      }
     };
-  };
+  }
+
+  throw new Error('No se encontró un token de acceso válido.');
+};
 
   // =====================================================
   // 4. CARGAR ESTADO DEL DISPOSITIVO
@@ -167,9 +173,7 @@ export default function ResidenteView() {
 
         const dispositivo = snapshot.data();
 
-        setEstadoCasa(
-          dispositivo.estadoCasa || 'en_casa'
-        );
+        setEstadoCasa(dispositivo.estado || 'en_casa');
 
         setPushHabilitado(
           Boolean(dispositivo.fcmToken)
@@ -291,7 +295,7 @@ export default function ResidenteView() {
           ...contexto.identidad,
           unidadId: ufData.id,
           deviceId: contexto.deviceId,
-          estadoCasa: nuevoEstado,
+          estado: nuevoEstado,
           actualizado: new Date().toISOString()
         },
         { merge: true }
@@ -310,6 +314,8 @@ export default function ResidenteView() {
     }
   };
 
+  // =====================================================
+  //
   // =====================================================
   // 8. ACTIVAR / DESACTIVAR PUSH POR DISPOSITIVO
   // =====================================================
@@ -337,7 +343,7 @@ export default function ResidenteView() {
         await setDoc(
           contexto.ref,
           {
-            fcmToken: deleteField(),
+            recibirPush: false,
             pushActualizado: new Date().toISOString()
           },
           { merge: true }
@@ -370,6 +376,8 @@ export default function ResidenteView() {
           unidadId: ufData.id,
           deviceId: contexto.deviceId,
           fcmToken: currentToken,
+          estado: estadoCasa || 'en_casa',
+          recibirPush: true,
           pushActualizado: new Date().toISOString()
         },
         { merge: true }
@@ -2338,7 +2346,7 @@ useEffect(() => {
     if (ufData) {
       try {
         await updateDoc(doc(db, 'unidades', ufData.id), {
-          estadoCasa: nuevoEstado
+          estado: nuevoEstado,
         });
       } catch (error) {
         console.error("Error al actualizar estado en casa:", error);
