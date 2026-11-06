@@ -1632,6 +1632,7 @@ export default function ResidenteView() {
               disabled={!llamadaEntrante}
               style={{
                 padding: '8px',
+                color: 'dark',
                 background: '#17a2b8',
                 border: '1px solid #28a745',
                 borderRadius: '4px',

@@ -216,11 +216,11 @@ exports.enviarNotificacionLlamada = onDocumentCreated(
         llamada.nombre ||
         "";
 
-      const titulo = "PortalBell - Timbre inteligente";
+      const titulo = "🔔PortalBell";
 
       const cuerpo = nombreVisitante
-        ? `${nombreVisitante} está llamando a tu puerta`
-        : "Un visitante está llamando a tu puerta";
+        ? `🔔 ${nombreVisitante} está en tu puerta`
+        :  "🔔 ¡Están tocando el timbre!";
 
       const mensajeBase = {
         data: {
