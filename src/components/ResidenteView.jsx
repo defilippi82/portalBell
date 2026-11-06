@@ -56,6 +56,7 @@ export default function ResidenteView() {
   const callRemoteVideoRef = useRef(null);
   const mediaStreamRef = useRef(null);
   const peerConnectionRef = useRef(null);
+  const iniciandoVideollamadaRef = useRef(false);
 
   // Visitantes frecuentes
   const [visitantesFrecuentes, setVisitantesFrecuentes] = useState([]);
@@ -718,79 +719,89 @@ export default function ResidenteView() {
   // 15. VIDEOLLAMADAS WEBRTC
   // =====================================================
 
-  const solicitarVideollamadaSeguridad = async () => {
+ 
+const solicitarVideollamadaSeguridad = async () => {
 
-    if (!llamadaEntrante) {
+  if (!llamadaEntrante) {
+    alert(
+      'No hay ninguna llamada o chat activo con un visitante en este momento.'
+    );
+    return;
+  }
 
-      alert(
-        'No hay ninguna llamada o chat activo con un visitante en este momento para elevar a videollamada.'
-      );
+  try {
 
-      return;
+    const llamadaRef = doc(
+      db,
+      'llamadas',
+      llamadaEntrante.id
+    );
+
+    await updateDoc(llamadaRef, {
+      tipo: 'video'
+    });
+
+    setLlamadaEntrante(prev => ({
+      ...prev,
+      tipo: 'video'
+    }));
+
+    // No iniciamos WebRTC acá.
+    // El onSnapshot detectará el cambio y lo iniciará una sola vez.
+
+  } catch (error) {
+
+    console.error(
+      'Error al solicitar videollamada:',
+      error
+    );
+
+    alert('No se pudo solicitar la videollamada.');
+  }
+};
+
+
+  
+const iniciarVideollamadaEntrante = async (callId) => {
+
+  // Evita iniciar dos conexiones WebRTC simultáneamente.
+  if (iniciandoVideollamadaRef.current) return;
+
+  if (peerConnectionRef.current) return;
+
+  iniciandoVideollamadaRef.current = true;
+
+  setEnVideollamada(true);
+
+  try {
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true
+    });
+
+    mediaStreamRef.current = stream;
+
+    if (callLocalVideoRef.current) {
+      callLocalVideoRef.current.srcObject = stream;
     }
 
-    try {
+    await conectarWebRTCResidente(callId, stream);
 
-      const llamadaRef = doc(
-        db,
-        'llamadas',
-        llamadaEntrante.id
-      );
+  } catch (error) {
 
-      await updateDoc(llamadaRef, {
-        tipo: 'video'
-      });
+    console.error(
+      'Error al acceder a la cámara o iniciar WebRTC:',
+      error
+    );
 
-      setLlamadaEntrante(prev => ({
-        ...prev,
-        tipo: 'video'
-      }));
+    alert(
+      'No se pudo iniciar la videollamada. Verificá los permisos de cámara y micrófono.'
+    );
 
-      iniciarVideollamadaEntrante(llamadaEntrante.id);
-
-    } catch (error) {
-
-      console.error(
-        'Error al solicitar videollamada:',
-        error
-      );
-
-      alert('No se pudo iniciar la videollamada.');
-    }
-  };
-
-  const iniciarVideollamadaEntrante = async (callId) => {
-
-    setEnVideollamada(true);
-
-    try {
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true
-      });
-
-      mediaStreamRef.current = stream;
-
-      if (callLocalVideoRef.current) {
-
-        callLocalVideoRef.current.srcObject = stream;
-      }
-
-      conectarWebRTCResidente(callId, stream);
-
-    } catch (error) {
-
-      console.error(
-        'Error al acceder a la cámara en llamada entrante:',
-        error
-      );
-
-      alert(
-        'No se pudo acceder a la cámara. Verificá los permisos del navegador.'
-      );
-    }
-  };
+    detenerCamaraSeguridad(iniciandoVideollamadaRef.current = false;);
+  }
+};
 
   const conectarWebRTCResidente = async (callId, localStream) => {
 
