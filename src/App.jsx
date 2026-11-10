@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'r
 import VisitanteView from './components/VisitanteView';
 import ResidenteView from './components/ResidenteView';
 import UsuariosUFView from './components/UsuariosUFView';
+import { Privacidad } from './components/privacidad';
 
 // Componente para detectar si hay una sesión de residente guardada
 function HomeRedirect() {
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="/residente" element={<ResidenteView />} />
         <Route path="/administrador" element={<UsuariosUFView />} />
         <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="/privacidad" element={<Privacidad />} />
       </Routes>
     </Router>
   );
