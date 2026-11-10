@@ -1,6 +1,3 @@
-//chatgpt
-
-
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { logger } = require("firebase-functions");
 const admin = require("firebase-admin");
@@ -10,20 +7,25 @@ admin.initializeApp();
 const db = admin.firestore();
 const messaging = admin.messaging();
 
+// Declaración de secretos para la API de Meta (WhatsApp)
+const { defineSecret } = require("firebase-functions/params");
+const whatsappToken = defineSecret("WHATSAPP_TOKEN");
+const whatsappPhoneId = defineSecret("WHATSAPP_PHONE_NUMBER_ID");
+
 const COLECCION_PROCESADOS = "_pushProcesados";
 const TIEMPO_LEASE_MS = 2 * 60 * 1000;
 const MAX_TOKENS_POR_ENVIO = 500;
 
 // -----------------------------------------------------
-// PROCESAMIENTO DE UNA LLAMADA NUEVA
+// PROCESAMIENTO DE UNA LLAMADA NUEVA (CON PUSH + WHATSAPP FALLBACK)
 // -----------------------------------------------------
 
 exports.enviarNotificacionLlamada = onDocumentCreated(
   {
     document: "llamadas/{llamadoId}",
     region: "southamerica-east1",
-    retry: true
-    
+    retry: true,
+    secrets: [whatsappToken, whatsappPhoneId], // Inyectamos los secretos de Meta aquí
   },
   async (event) => {
     const llamadoId = event.params.llamadoId;
@@ -124,6 +126,10 @@ exports.enviarNotificacionLlamada = onDocumentCreated(
 
       const unidadDoc = unidadQuery.docs[0];
       const unidadId = unidadDoc.id;
+      const unidadData = unidadDoc.data();
+      
+      // Obtenemos el teléfono del residente desde la unidad (ej: "5491122334455")
+      const telefonoResidente = unidadData.telefono || "";
 
       // -----------------------------------------------
       // 3. BUSCAR LOS DISPOSITIVOS DE ESA UNIDAD
@@ -177,10 +183,6 @@ exports.enviarNotificacionLlamada = onDocumentCreated(
       // 5. AGRUPAR TOKENS SIN DUPLICAR
       // -----------------------------------------------
 
-      // Un mismo token puede aparecer en más de un documento.
-      // Lo enviamos una sola vez y conservamos todas sus referencias
-      // para poder limpiar tokens inválidos.
-
       const tokensMap = new Map();
 
       for (const doc of dispositivosHabilitados) {
@@ -207,7 +209,7 @@ exports.enviarNotificacionLlamada = onDocumentCreated(
       });
 
       // -----------------------------------------------
-      // 6. PREPARAR EL MENSAJE
+      // 6. PREPARAR EL MENSAJE PUSH
       // -----------------------------------------------
 
       const nombreVisitante =
@@ -220,7 +222,7 @@ exports.enviarNotificacionLlamada = onDocumentCreated(
 
       const cuerpo = nombreVisitante
         ? `🔔 ${nombreVisitante} está en tu puerta`
-        :  "🔔 ¡Están tocando el timbre!";
+        : "🔔 ¡Están tocando el timbre!";
 
       const mensajeBase = {
         data: {
@@ -315,7 +317,7 @@ exports.enviarNotificacionLlamada = onDocumentCreated(
       }
 
       // -----------------------------------------------
-      // 9. REGISTRAR RESULTADO
+      // 9. REGISTRAR RESULTADO DE PUSH
       // -----------------------------------------------
 
       await procesoRef.set(
@@ -333,13 +335,65 @@ exports.enviarNotificacionLlamada = onDocumentCreated(
         { merge: true }
       );
 
-      logger.info("Proceso de notificaciones finalizado", {
+      logger.info("Proceso de notificaciones push finalizado", {
         llamadoId,
         unidadId,
         enviados,
         fallidos,
         tokensInvalidos,
       });
+
+      // -------------------------------------------------
+      // 10. FALLBACK DE WHATSAPP (A los 12 segundos)
+      // -------------------------------------------------
+      setTimeout(async () => {
+        try {
+          const llamadaRef = db.collection("llamadas").doc(llamadoId);
+          const llamadaSnap = await llamadaRef.get();
+
+          // Verificamos si la llamada sigue activa (nadie atendió) y si la unidad tiene teléfono
+          if (
+            llamadaSnap.exists &&
+            llamadaSnap.data().estado === "activo" &&
+            telefonoResidente
+          ) {
+            logger.info(`Disparando WhatsApp de respaldo para UF ${uf}...`, { llamadoId });
+
+            const phoneId = whatsappPhoneId.value();
+            const token = whatsappToken.value();
+
+            // Petición a la API Cloud de Meta
+            const response = await fetch(
+              `https://graph.facebook.com/v18.0/${phoneId}/messages`,
+              {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  messaging_product: "whatsapp",
+                  to: telefonoResidente,
+                  type: "template",
+                  template: {
+                    name: "hello_world", // (Plantilla de prueba de Meta. Luego creas una personalizada)
+                    language: { code: "en_US" },
+                  },
+                }),
+              }
+            );
+
+            const resultadoMeta = await response.json();
+            logger.info("Respuesta de Meta WhatsApp API:", { resultadoMeta });
+          }
+        } catch (waError) {
+          logger.error("Error al enviar WhatsApp de respaldo", {
+            llamadoId,
+            error: waError.message,
+          });
+        }
+      }, 12000); // 12 segundos de espera
+
     } catch (error) {
       logger.error("Error procesando notificación de llamada", {
         llamadoId,
