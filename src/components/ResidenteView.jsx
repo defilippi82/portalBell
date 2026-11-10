@@ -1648,8 +1648,9 @@ const iniciarVideollamadaEntrante = async (callId) => {
                 border: '1px solid #28a745',
                 borderRadius: '4px',
                 cursor: llamadaEntrante ? 'pointer' : 'not-allowed',
-                textAlign: 'left',
-                fontSize: '12px',
+                textAlign: 'center',
+                fontSize: '14px',
+                fontWeight: 'bold',
                 opacity: llamadaEntrante ? 1 : 0.6
               }}
             >
