@@ -1,29 +1,42 @@
+
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
-const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onTaskDispatched } = require("firebase-functions/tasks");
 const { logger } = require("firebase-functions");
+const { defineSecret } = require("firebase-functions/params");
+
 const admin = require("firebase-admin");
+const { getFunctions } = require("firebase-admin/functions");
 
 admin.initializeApp();
 
 const db = admin.firestore();
 const messaging = admin.messaging();
 
-// Declaración de secretos para la API de Meta (WhatsApp)
-const { defineSecret } = require("firebase-functions/params");
-const whatsappToken = defineSecret("WHATSAPP_TOKEN");
-const whatsappPhoneId = defineSecret("WHATSAPP_PHONE_NUMBER_ID");
+// -----------------------------------------------------
+// CONFIGURACIÓN
+// -----------------------------------------------------
+
+const REGION = "southamerica-east1";
 
 const COLECCION_PROCESADOS = "_pushProcesados";
 const TIEMPO_LEASE_MS = 2 * 60 * 1000;
-const MAX_TOKENS_POR_ENVIO = 500;
+
+const whatsappToken = defineSecret("WHATSAPP_TOKEN");
+const whatsappPhoneId = defineSecret("WHATSAPP_PHONE_NUMBER_ID");
+
+// Cola asociada a la función enviarFallbackWhatsapp.
+const queueWhatsapp = getFunctions().taskQueue(
+  `locations/${REGION}/functions/enviarFallbackWhatsapp`
+);
 
 // -----------------------------------------------------
-// 1. PROCESAMIENTO DE LLAMADA NUEVA (PUSH INSTANTÁNEO)
+// 1. NUEVA LLAMADA: PUSH INMEDIATO + PROGRAMAR WHATSAPP
 // -----------------------------------------------------
+
 exports.enviarNotificacionLlamada = onDocumentCreated(
   {
     document: "llamadas/{llamadoId}",
-    region: "southamerica-east1",
+    region: REGION,
     retry: true,
   },
   async (event) => {
@@ -33,28 +46,58 @@ exports.enviarNotificacionLlamada = onDocumentCreated(
     if (!llamada) return;
 
     const { edificioId, uf } = llamada;
-    if (!edificioId || !uf) return;
+
+    if (!edificioId || uf === undefined || uf === null) {
+      logger.warn("Llamada sin edificioId o UF", { llamadoId });
+      return;
+    }
 
     const eventoId = event.id;
     const procesoRef = db.collection(COLECCION_PROCESADOS).doc(eventoId);
 
-    // Control de duplicados
+    // Evitar que dos ejecuciones procesen simultáneamente el mismo evento.
     const puedeProcesar = await db.runTransaction(async (tx) => {
       const procesoSnap = await tx.get(procesoRef);
-      if (procesoSnap.exists && procesoSnap.data().estado === "completado") return false;
-      
-      tx.set(procesoRef, {
-        estado: "procesando",
-        llamadoId,
-        inicio: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
+
+      if (procesoSnap.exists) {
+        const proceso = procesoSnap.data();
+
+        if (proceso.estado === "completado") {
+          return false;
+        }
+
+        if (
+          proceso.estado === "procesando" &&
+          proceso.leaseHasta &&
+          proceso.leaseHasta.toMillis() > Date.now()
+        ) {
+          return false;
+        }
+      }
+
+      tx.set(
+        procesoRef,
+        {
+          estado: "procesando",
+          llamadoId,
+          leaseHasta: admin.firestore.Timestamp.fromMillis(
+            Date.now() + TIEMPO_LEASE_MS
+          ),
+          inicio: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
       return true;
     });
 
-    if (!puedeProcesar) return;
+    if (!puedeProcesar) {
+      logger.info("Evento ya procesado o en ejecución", { llamadoId });
+      return;
+    }
 
     try {
-      // Buscar la unidad para obtener el teléfono y vincularlo a la llamada
+      // Buscar unidad.
       const unidadQuery = await db
         .collection("unidades")
         .where("edificioId", "==", edificioId)
@@ -69,146 +112,354 @@ exports.enviarNotificacionLlamada = onDocumentCreated(
 
       const unidadDoc = unidadQuery.docs[0];
       const unidadData = unidadDoc.data();
-      const telefonoResidente = unidadData.telefono || "";
       const unidadId = unidadDoc.id;
 
-      // Guardamos el teléfono directamente en el documento de la llamada para que el fallback lo lea fácil
-      await db.collection("llamadas").doc(llamadoId).set({
-        telefonoResidente: telefonoResidente,
-        estado: "activo",
-        whatsappEnviado: false,
-        creadoEn: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
+      const telefonoResidente = unidadData.telefono || "";
 
-      // Buscar dispositivos de la unidad
+      // Completar los datos de la llamada sin pisar estados existentes.
+      await db.runTransaction(async (tx) => {
+        const llamadaSnap = await tx.get(
+          db.collection("llamadas").doc(llamadoId)
+        );
+
+        if (!llamadaSnap.exists) return;
+
+        const actual = llamadaSnap.data();
+        const actualizacion = {
+          telefonoResidente,
+        };
+
+        if (!actual.estado) {
+          actualizacion.estado = "activo";
+        }
+
+        if (actual.whatsappEnviado === undefined) {
+          actualizacion.whatsappEnviado = false;
+        }
+
+        if (!actual.creadoEn) {
+          actualizacion.creadoEn =
+            admin.firestore.FieldValue.serverTimestamp();
+        }
+
+        tx.set(
+          db.collection("llamadas").doc(llamadoId),
+          actualizacion,
+          { merge: true }
+        );
+      });
+
+      // -------------------------------------------------
+      // PUSH INMEDIATO
+      // -------------------------------------------------
+
       const dispositivosSnap = await db
-        .collection("unidades").doc(unidadId).collection("dispositivos").get();
-
-      if (dispositivosSnap.empty) {
-        await marcarProcesoCompletado(procesoRef, "sin_dispositivos");
-        return;
-      }
+        .collection("unidades")
+        .doc(unidadId)
+        .collection("dispositivos")
+        .get();
 
       const dispositivosHabilitados = dispositivosSnap.docs.filter((doc) => {
-        const d = doc.data();
-        return d.recibirPush === true && d.estado === "en_casa" && typeof d.fcmToken === "string";
+        const dispositivo = doc.data();
+
+        return (
+          dispositivo.recibirPush === true &&
+          dispositivo.estado === "en_casa" &&
+          typeof dispositivo.fcmToken === "string" &&
+          dispositivo.fcmToken.trim() !== ""
+        );
       });
 
-      if (dispositivosHabilitados.length === 0) {
-        await marcarProcesoCompletado(procesoRef, "sin_destinatarios");
-        return;
+      const tokensMap = new Map();
+
+      for (const doc of dispositivosHabilitados) {
+        const token = doc.data().fcmToken.trim();
+
+        if (!tokensMap.has(token)) {
+          tokensMap.set(token, doc.ref);
+        }
       }
 
-      // Preparar tokens únicos
-      const tokensMap = new Map();
-      for (const doc of dispositivosHabilitados) {
-        tokensMap.set(doc.data().fcmToken.trim(), doc.ref);
-      }
       const tokensUnicos = Array.from(tokensMap.keys());
 
-      // Enviar Push de Alta Prioridad
-      await messaging.sendEachForMulticast({
-        data: {
-          title: "🔔 PortalBell",
-          body: llamada.nombreVisitante ? `🔔 ${llamada.nombreVisitante} está en tu puerta` : "🔔 ¡Están tocando el timbre!",
-          click_action: "/",
-          llamadoId: String(llamadoId),
-        },
-        tokens: tokensUnicos,
-        webpush: { headers: { Urgency: "high", TTL: "60" } },
+      if (tokensUnicos.length > 0) {
+        const textoVisitante = llamada.nombreVisitante
+          ? `🔔 ${llamada.nombreVisitante} está en tu puerta`
+          : "🔔 ¡Están tocando el timbre!";
+
+        // FCM admite hasta 500 tokens por envío multicast.
+        for (let i = 0; i < tokensUnicos.length; i += 500) {
+          const lote = tokensUnicos.slice(i, i + 500);
+
+          const resultadoPush = await messaging.sendEachForMulticast({
+            tokens: lote,
+            data: {
+              title: "🔔 PortalBell",
+              body: textoVisitante,
+              click_action: "/",
+              llamadoId: String(llamadoId),
+            },
+            webpush: {
+              headers: {
+                Urgency: "high",
+                TTL: "60",
+              },
+            },
+          });
+
+          logger.info("Resultado de envío push", {
+            llamadoId,
+            enviados: resultadoPush.successCount,
+            errores: resultadoPush.failureCount,
+          });
+        }
+      } else {
+        logger.info("No hay dispositivos habilitados para push", {
+          llamadoId,
+        });
+      }
+
+      // -------------------------------------------------
+      // PROGRAMAR FALLBACK DE WHATSAPP
+      // -------------------------------------------------
+
+      try {
+        await queueWhatsapp.enqueue(
+          { llamadoId },
+          {
+            id: `whatsapp-${llamadoId}`,
+            scheduleDelaySeconds: 1,
+            dispatchDeadlineSeconds: 60,
+          }
+        );
+
+        logger.info("Tarea WhatsApp programada", { llamadoId });
+      } catch (error) {
+        // Si la tarea ya existe, consideramos que ya fue programada.
+        if (
+          error.code === "functions/task-already-exists" ||
+          error.code === "already-exists"
+        ) {
+          logger.info("La tarea WhatsApp ya estaba programada", {
+            llamadoId,
+          });
+        } else {
+          throw error;
+        }
+      }
+
+      await marcarProcesoCompletado(procesoRef, "push_y_whatsapp_programado");
+    } catch (error) {
+      logger.error("Error procesando llamada", {
+        llamadoId,
+        mensaje: error.message,
       });
 
-      await marcarProcesoCompletado(procesoRef, "finalizado");
+      // Liberar el proceso para permitir un nuevo intento del trigger.
+      await procesoRef.set(
+        {
+          estado: "error",
+          leaseHasta: admin.firestore.Timestamp.fromMillis(Date.now()),
+          error: error.message,
+        },
+        { merge: true }
+      );
 
-    } catch (error) {
-      logger.error("Error en notificación push", { error: error.message });
       throw error;
     }
   }
 );
 
 // -----------------------------------------------------
-// 2. FALLBACK AUTOMÁTICO DE WHATSAPP (Corre cada 1 minuto)
+// 2. CLOUD TASKS: RESPALDO DE WHATSAPP
 // -----------------------------------------------------
-exports.verificarFallbackWhatsapp = onSchedule(
+
+exports.enviarFallbackWhatsapp = onTaskDispatched(
   {
-    schedule: "every 1 minutes",
-    region: "southamerica-east1",
+    region: REGION,
     secrets: [whatsappToken, whatsappPhoneId],
+
+    retryConfig: {
+      maxAttempts: 3,
+      minBackoffSeconds: 30,
+      maxBackoffSeconds: 120,
+      maxDoublings: 2,
+    },
+
+    rateLimits: {
+      maxConcurrentDispatches: 10,
+    },
   },
-  async (event) => {
-    const ahora = Date.now();
-    // Umbral: Llamadas creadas hace más de 15 segundos que siguen activas y sin WhatsApp enviado
-    const corteTiempo = new Date(ahora - 15000); 
+  async (req) => {
+    const { llamadoId } = req.data || {};
 
-    const llamadasPendientes = await db.collection("llamadas")
-      .where("estado", "==", "activo")
-      .where("whatsappEnviado", "==", false)
-      .where("creadoEn", "<=", corteTiempo)
-      .get();
-
-    if (llamadasPendientes.empty) {
+    if (!llamadoId) {
+      logger.error("Cloud Task sin llamadoId");
       return;
     }
 
-    const phoneId = whatsappPhoneId.value();
-    const token = whatsappToken.value();
+    const llamadaRef = db.collection("llamadas").doc(llamadoId);
 
-    for (const docLlamada of llamadasPendientes.docs) {
-      const data = docLlamada.data();
-      const llamadoId = docLlamada.id;
-      const telefono = data.telefonoResidente;
-      const uf = data.uf || "su unidad";
+    // Consultar el estado actualizado de la llamada.
+    const llamadaSnap = await llamadaRef.get();
 
-      if (!telefono) {
-        // Si no tiene teléfono, marcamos que ya se evaluó para que no lo busque más
-        await docLlamada.ref.update({ whatsappEnviado: true });
-        continue;
+    if (!llamadaSnap.exists) {
+      logger.warn("La llamada ya no existe", { llamadoId });
+      return;
+    }
+
+    const llamada = llamadaSnap.data();
+
+    if (
+      llamada.estado !== "activo" ||
+      llamada.whatsappEnviado === true
+    ) {
+      logger.info("No corresponde enviar WhatsApp", {
+        llamadoId,
+        estado: llamada.estado,
+        whatsappEnviado: llamada.whatsappEnviado,
+      });
+      return;
+    }
+
+    // Reclamar el envío mediante una transacción.
+    const puedeEnviar = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(llamadaRef);
+
+      if (!snap.exists) return false;
+
+      const actual = snap.data();
+
+      if (
+        actual.estado !== "activo" ||
+        actual.whatsappEnviado === true
+      ) {
+        return false;
       }
 
-      try {
-        logger.info(`Disparando WhatsApp de respaldo para llamado ${llamadoId} al teléfono ${telefono}`);
+      const ahora = Date.now();
+      const leaseHasta = actual.whatsappLeaseHasta;
 
-        // Petición a la API Cloud de Meta
-        const response = await fetch(
-          `https://graph.facebook.com/v18.0/${phoneId}/messages`,
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              messaging_product: "whatsapp",
-              to: telefono,
-              type: "template",
-              template: {
-                name: "hello_world", // Plantilla de prueba de Meta
-                language: { code: "en_US" },
+      if (
+        actual.whatsappEstado === "enviando" &&
+        leaseHasta &&
+        leaseHasta.toMillis() > ahora
+      ) {
+        return false;
+      }
+
+      tx.update(llamadaRef, {
+        whatsappEstado: "enviando",
+        whatsappLeaseHasta: admin.firestore.Timestamp.fromMillis(
+          ahora + TIEMPO_LEASE_MS
+        ),
+        whatsappIntentoEn: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      return true;
+    });
+
+    if (!puedeEnviar) {
+      logger.info("WhatsApp ya reclamado o llamada no habilitada", {
+        llamadoId,
+      });
+      return;
+    }
+
+    const telefono = llamada.telefonoResidente;
+
+    if (!telefono) {
+      await llamadaRef.update({
+        whatsappEstado: "sin_telefono",
+        whatsappLeaseHasta: admin.firestore.FieldValue.delete(),
+      });
+
+      logger.warn("No hay teléfono para enviar WhatsApp", { llamadoId });
+      return;
+    }
+
+    try {
+      const phoneId = whatsappPhoneId.value();
+      const token = whatsappToken.value();
+
+      const response = await fetch(
+        `https://graph.facebook.com/v18.0/${phoneId}/messages`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            to: telefono,
+            type: "template",
+            template: {
+              name: "hello_world",
+              language: {
+                code: "en_US",
               },
-            }),
-          }
+            },
+          }),
+        }
+      );
+
+      const resultadoMeta = await response.json();
+
+      if (!response.ok || resultadoMeta.error) {
+        throw new Error(
+          resultadoMeta.error?.message ||
+            `Meta devolvió HTTP ${response.status}`
         );
-
-        const resultadoMeta = await response.json();
-        logger.info("Respuesta Meta WhatsApp:", resultadoMeta);
-
-        // Marcamos como enviado para que no vuelva a dispararse
-        await docLlamada.ref.update({ whatsappEnviado: true });
-
-      } catch (err) {
-        logger.error(`Error enviando WhatsApp para llamado ${llamadoId}`, err);
       }
+
+      // Confirmar envío.
+      await llamadaRef.update({
+        whatsappEnviado: true,
+        whatsappEstado: "enviado",
+        whatsappEnviadoEn: admin.firestore.FieldValue.serverTimestamp(),
+        whatsappMensajeId: resultadoMeta.messages?.[0]?.id || null,
+        whatsappLeaseHasta: admin.firestore.FieldValue.delete(),
+      });
+
+      logger.info("WhatsApp enviado correctamente", {
+        llamadoId,
+        mensajeId: resultadoMeta.messages?.[0]?.id || null,
+      });
+    } catch (error) {
+      // Liberar el bloqueo para permitir el reintento de Cloud Tasks.
+      await llamadaRef.update({
+        whatsappEstado: "pendiente",
+        whatsappLeaseHasta: admin.firestore.FieldValue.delete(),
+        whatsappError: error.message,
+        whatsappUltimoErrorEn:
+          admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      logger.error("Error enviando WhatsApp", {
+        llamadoId,
+        mensaje: error.message,
+      });
+
+      throw error;
     }
   }
 );
 
+// -----------------------------------------------------
+// 3. UTILIDAD: MARCAR EVENTO COMO COMPLETADO
+// -----------------------------------------------------
+
 async function marcarProcesoCompletado(procesoRef, resultado) {
-  await procesoRef.set({
-    estado: "completado",
-    resultado,
-    finalizado: admin.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true });
+  await procesoRef.set(
+    {
+      estado: "completado",
+      resultado,
+      leaseHasta: admin.firestore.FieldValue.delete(),
+      finalizado: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
 }
 
 
