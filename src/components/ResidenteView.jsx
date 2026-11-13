@@ -81,7 +81,7 @@ export default function ResidenteView() {
   const mensajesPredeterminados = [
     'Ya bajo',
     'No puedo bajar en este momento',
-    'Dejalo en recepción por favor',
+    '¿Quién es?',
     'En 5 minutos bajo'
   ];
 
