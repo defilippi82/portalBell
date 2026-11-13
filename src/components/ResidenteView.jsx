@@ -1750,29 +1750,13 @@ const iniciarVideollamadaEntrante = async (callId) => {
 
           {subUsuarios.map(sub => (
 
-            <li
-              key={sub.id}
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '6px',
-                background: 'white',
-                padding: '6px',
-                borderRadius: '4px'
+            <li key={sub.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', background: 'white', padding: '6px', borderRadius: '4px'
               }}
             >
 
-              <span>
-                <strong>{sub.nombre}</strong>
-                {' '}({sub.rol})
-                {' '} - 📞 {sub.telefono}
-              </span>
+              <span><strong>{sub.nombre}</strong>{' '}({sub.rol}) {' '} - 📞 {sub.telefono} </span>
 
-              <div style={{
-                display: 'flex',
-                gap: '5px'
-              }}>
+              <div style={{  display: 'flex', gap: '5px'  }}>
 
                 <button
                   onClick={() => enviarWhatsAppSubUsuario(sub)}
