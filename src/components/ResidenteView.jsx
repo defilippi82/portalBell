@@ -1534,7 +1534,7 @@ const iniciarVideollamadaEntrante = async (callId) => {
               background: estadoCasa === 'en_casa'
                 ? '#28a745'
                 : '#ccc',
-              color: 'white',
+              color: 'black',
               border: 'none',
               borderRadius: '5px',
               fontWeight: 'bold',
@@ -1552,7 +1552,7 @@ const iniciarVideollamadaEntrante = async (callId) => {
               background: estadoCasa === 'fuera_de_casa'
                 ? '#dc3545'
                 : '#ccc',
-              color: 'white',
+              color: 'black',
               border: 'none',
               borderRadius: '5px',
               fontWeight: 'bold',
@@ -1591,7 +1591,7 @@ const iniciarVideollamadaEntrante = async (callId) => {
           }}>
             {procesandoPush
               ? 'Procesando...'
-              : '🔔 Activar Notificaciones Push'}
+              : '🔔 Activar Notificaciones'}
           </span>
 
         </label>
@@ -1649,7 +1649,7 @@ const iniciarVideollamadaEntrante = async (callId) => {
                 borderRadius: '4px',
                 cursor: llamadaEntrante ? 'pointer' : 'not-allowed',
                 textAlign: 'center',
-                fontSize: '14px',
+                fontSize: '18px',
                 fontWeight: 'bold',
                 opacity: llamadaEntrante ? 1 : 0.6
               }}
@@ -1705,7 +1705,7 @@ const iniciarVideollamadaEntrante = async (callId) => {
 
             <input
               type="text"
-              placeholder="Rol (Ej: Pareja, Hijo)"
+              placeholder="(Ej: Pareja, Hijo, Inquilino...)"
               value={nuevoSubRol}
               onChange={e => setNuevoSubRol(e.target.value)}
               style={{
