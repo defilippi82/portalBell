@@ -390,15 +390,45 @@ exports.enviarFallbackWhatsapp = onTaskDispatched(
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
+        body: JSON.stringify({
             messaging_product: "whatsapp",
             to: telefono,
             type: "template",
             template: {
-              name: "hello_world",
+              name: "NOMBRE_DE_TU_PLANTILLA", // <-- Poné acá el nombre exacto con el que la guardaste
               language: {
-                code: "en_US",
+                code: "es", // O "es_AR" según el idioma exacto que seleccionaste arriba
               },
+              components: [
+                {
+                  type: "body",
+                  parameters: [
+                    {
+                      type: "text",
+                      parameter_name: "vistante_id",
+                      text: llamada.nombreVisitante || "Un visitante",
+                    },
+                    {
+                      type: "text",
+                      parameter_name: "unidad_name",
+                      text: String(llamada.uf || ""),
+                    },
+                  ],
+                },
+                {
+                  type: "button",
+                  sub_type: "url",
+                  index: "0",
+                  parameters: [
+                    {
+                      type: "text",
+                      // Acá va solo la parte que reemplaza a {{1}} en la URL del botón.
+                      // Si tu URL en Meta es "https://portalbell.vercel.app/{{1}}", pasale el resto:
+                      text: `?llamadoId=${llamadoId}`, 
+                    },
+                  ],
+                },
+              ],
             },
           }),
         }
